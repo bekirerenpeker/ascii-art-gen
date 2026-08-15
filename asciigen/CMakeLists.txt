@@ -1,0 +1,29 @@
+# asciigen -- the library. Pipeline stages (image_loading, filters, resample,
+# dithering, edges, bitmap, color, output) live here as a static library. No
+# dependency on app/; nothing here may include CLI code.
+#
+# Headers live directly under include/ (no extra "asciigen/" nesting -- this
+# folder already is that namespace), e.g. include/core/image.hpp is
+# #include "core/image.hpp" from both src/ and app/.
+
+file(GLOB_RECURSE ASCIIGEN_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+
+add_library(asciigen STATIC ${ASCIIGEN_SOURCES})
+target_include_directories(asciigen PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(asciigen PUBLIC cxx_std_20)
+# PUBLIC, not PRIVATE: Image.hpp is a public header and includes stb/stb_image.h
+# for stbi_image_free, so stb's include path has to propagate to consumers too.
+target_link_libraries(asciigen PUBLIC stb)
+
+if(MSVC)
+    target_compile_options(asciigen PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(asciigen PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
+endif()
+
+# STATIC with zero sources currently in src/ still needs one translation unit
+# to produce a valid archive; drop this once the first real .cpp lands there.
+if(NOT ASCIIGEN_SOURCES)
+    target_sources(asciigen PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/_empty.cpp")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/_empty.cpp" "")
+endif()
