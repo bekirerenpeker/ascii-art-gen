@@ -7,13 +7,11 @@
 #include "output/Terminal.hpp"
 #include <iostream>
 
-// ansi 16 doesnt work currently fix later dont look at now
-
-int pixelsPerChar = 50;
+int pixelsPerChar = 150;
 
 int main(int argc, char* argv[])
 {
-    Image img = ImageManager::loadImage(SOURCE_DIR "/assets/images/test_img1.jpg");
+    Image img = ImageManager::loadImage(SOURCE_DIR "/assets/images/apple.png");
 
     Charset charset;
     CellBuffer buffer;
@@ -21,7 +19,8 @@ int main(int argc, char* argv[])
 
     Ramp::generate(img, buffer, charset);
 
-    const std::string rendered = AnsiRenderer::render(buffer, charset);
+    const std::string rendered =
+        AnsiRenderer::render(buffer, charset, {.depth = AnsiRenderer::ColorDepth::TrueColor});
 
     Terminal::enableAnsi();   // required on Windows or the escapes print as literal text
     Terminal::enableUtf8();   // no-op for pure ASCII, but this is going through real UTF-8 encoding

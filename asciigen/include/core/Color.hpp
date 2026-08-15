@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 // The 16 standard ANSI colors. Values are the SGR *foreground* parameters, so
@@ -50,52 +51,32 @@ struct RGB
 // Default is never returned -- it has no RGB value to match against.
 inline GlyphColor RGB::toGlyphColor() const
 {
-    struct Entry
-    {
-        uint8_t r, g, b;
-        GlyphColor color;
-    };
+    float rf = r / 255.f, gf = g / 255.f, bf = b / 255.f;
+    float value = std::max({rf, gf, bf});
+    float chroma = value - std::min({rf, gf, bf});
+    float saturation = (value <= 0.f) ? 0.f : chroma / value;
 
-    // xterm's default palette. Terminals let users retheme these freely, so
-    // this is a best-effort match rather than exactly what ends up on screen.
-    static constexpr Entry palette[] = {
-        {  0,   0,   0,         GlyphColor::Black},
-        {205,   0,   0,           GlyphColor::Red},
-        {  0, 205,   0,         GlyphColor::Green},
-        {205, 205,   0,        GlyphColor::Yellow},
-        {  0,   0, 238,          GlyphColor::Blue},
-        {205,   0, 205,       GlyphColor::Magenta},
-        {  0, 205, 205,          GlyphColor::Cyan},
-        {229, 229, 229,         GlyphColor::White},
-        {127, 127, 127,   GlyphColor::BrightBlack},
-        {255,   0,   0,     GlyphColor::BrightRed},
-        {  0, 255,   0,   GlyphColor::BrightGreen},
-        {255, 255,   0,  GlyphColor::BrightYellow},
-        { 92,  92, 255,    GlyphColor::BrightBlue},
-        {255,   0, 255, GlyphColor::BrightMagenta},
-        {  0, 255, 255,    GlyphColor::BrightCyan},
-        {255, 255, 255,   GlyphColor::BrightWhite},
-    };
-
-    GlyphColor best = GlyphColor::Black;
-    int32_t bestDistance = -1;
-
-    for (const Entry& entry : palette) {
-        // "Redmean" weighted distance: markedly closer to human perception
-        // than plain RGB Euclidean, while staying integer-only.
-        const int32_t rmean = (static_cast<int32_t>(r) + entry.r) / 2;
-        const int32_t dr = static_cast<int32_t>(r) - entry.r;
-        const int32_t dg = static_cast<int32_t>(g) - entry.g;
-        const int32_t db = static_cast<int32_t>(b) - entry.b;
-
-        const int32_t distance =
-            (((512 + rmean) * dr * dr) >> 8) + 4 * dg * dg + (((767 - rmean) * db * db) >> 8);
-
-        if (bestDistance < 0 || distance < bestDistance) {
-            bestDistance = distance;
-            best = entry.color;
-        }
+    // No real hue to work with -- decide by brightness alone.
+    if (value < 0.12f) return GlyphColor::Black;
+    if (saturation < 0.15f) {
+        if (value > 0.85f) return GlyphColor::BrightWhite;
+        if (value > 0.55f) return GlyphColor::White;
+        if (value > 0.25f) return GlyphColor::BrightBlack;
+        return GlyphColor::Black;
     }
 
-    return best;
+    float hue;
+    if (value == rf) hue = 60.f * fmod((gf - bf) / chroma, 6.f);
+    else if (value == gf) hue = 60.f * ((bf - rf) / chroma + 2.f);
+    else hue = 60.f * ((rf - gf) / chroma + 4.f);
+    if (hue < 0) hue += 360.f;
+
+    bool bright = value > 0.6f;
+
+    if (hue < 30 || hue >= 330) return bright ? GlyphColor::BrightRed : GlyphColor::Red;
+    if (hue < 90) return bright ? GlyphColor::BrightYellow : GlyphColor::Yellow;
+    if (hue < 150) return bright ? GlyphColor::BrightGreen : GlyphColor::Green;
+    if (hue < 210) return bright ? GlyphColor::BrightCyan : GlyphColor::Cyan;
+    if (hue < 270) return bright ? GlyphColor::BrightBlue : GlyphColor::Blue;
+    return bright ? GlyphColor::BrightMagenta : GlyphColor::Magenta;
 }
