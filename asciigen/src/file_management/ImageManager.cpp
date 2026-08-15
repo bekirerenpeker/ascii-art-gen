@@ -1,7 +1,6 @@
 #include "file_management/ImageManager.hpp"
 #include "stb/stb_image_write.h"
 #include "stb/stb_image.h"
-
 #include <algorithm>
 #include <cctype>
 #include <string>

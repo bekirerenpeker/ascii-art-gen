@@ -1,7 +1,7 @@
 #pragma once
 
-#include "bitmap/CellBuffer.hpp"
-#include "bitmap/Charset.hpp"
+#include "core/CellBuffer.hpp"
+#include "core/Charset.hpp"
 #include <string>
 
 namespace AnsiRenderer {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "file_management/Image.hpp"
+#include "core/Image.hpp"
 #include <filesystem>
 
 namespace ImageManager {

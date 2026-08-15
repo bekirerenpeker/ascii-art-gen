@@ -42,10 +42,10 @@ static inline void appendUtf8(std::string& out, char32_t cp)
 std::string render(const CellBuffer& buffer, const Charset& charset, AnsiRenderOptions opts)
 {
     std::string out;
-    out.reserve(buffer.width * buffer.height * 42 + buffer.height * 8);
+    out.reserve(buffer.width() * buffer.height() * 42 + buffer.height() * 8);
 
-    for (int y = 0; y < buffer.height; y++) {
-        for (int x = 0; x < buffer.width; x++) {
+    for (int y = buffer.height() - 1; y >= 0; y--) {
+        for (int x = 0; x < buffer.width(); x++) {
             const Cell& cell = buffer.getAt(x, y);
 
             switch (opts.depth) {

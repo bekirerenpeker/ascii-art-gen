@@ -1,4 +1,4 @@
-#include "bitmap/Charset.hpp"
+#include "core/Charset.hpp"
 
 const Charset& Charset::ascii()
 {

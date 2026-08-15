@@ -1,42 +1,31 @@
-#include "bitmap/CellBuffer.hpp"
-#include "bitmap/Charset.hpp"
+#include "bitmap/Ramp.hpp"
+#include "core/CellBuffer.hpp"
+#include "core/Charset.hpp"
+#include "file_management/ImageManager.hpp"
 #include "file_management/OutputManager.hpp"
 #include "output/AnsiRenderer.hpp"
 #include "output/Terminal.hpp"
-
 #include <iostream>
+
+// ansi 16 doesnt work currently fix later dont look at now
+
+int pixelsPerChar = 50;
 
 int main(int argc, char* argv[])
 {
-    Terminal::enableAnsi();   // required on Windows or the escapes print as literal text
-    Terminal::
-        enableUtf8();   // no-op for pure ASCII, but this is now going through real UTF-8 encoding
+    Image img = ImageManager::loadImage(SOURCE_DIR "/assets/images/test_img1.jpg");
 
-    const Charset& charset = Charset::ascii();
-
+    Charset charset;
     CellBuffer buffer;
-    buffer.width = 32;
-    buffer.height = 16;
-    buffer.cells.resize(buffer.width * buffer.height);
+    buffer.setSize(2 * img.width / pixelsPerChar, img.height / pixelsPerChar);
 
-    for (int y = 0; y < buffer.height; y++) {
-        for (int x = 0; x < buffer.width; x++) {
-            Cell& cell = buffer.getAt(x, y);
-            cell.fg = RGB {
-                static_cast<uint8_t>(x * 255 / (buffer.width - 1)),
-                static_cast<uint8_t>(y * 255 / (buffer.height - 1)),
-                128,
-            };
-            cell.bg = RGB {0, 0, 0};
-            // Sweep through the whole charset diagonally so every glyph in it
-            // gets exercised at least once, instead of always index 0 (space).
-            cell.glyphIndex = static_cast<uint16_t>((x + y) % charset.size());
-        }
-    }
+    Ramp::generate(img, buffer, charset);
 
     const std::string rendered = AnsiRenderer::render(buffer, charset);
 
-    std::cout << rendered;
+    Terminal::enableAnsi();   // required on Windows or the escapes print as literal text
+    Terminal::enableUtf8();   // no-op for pure ASCII, but this is going through real UTF-8 encoding
+    // std::cout << rendered;
 
     if (!OutputManager::saveAns(SOURCE_DIR "/test_render.ans", rendered))
         std::cerr << "failed to save test_render.ans\n";
