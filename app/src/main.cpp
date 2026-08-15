@@ -3,14 +3,23 @@
 #include "core/Charset.hpp"
 #include "file_management/ImageManager.hpp"
 #include "file_management/OutputManager.hpp"
+#include "font/Font.hpp"
+#include "font/GlyphAtlas.hpp"
 #include "output/AnsiRenderer.hpp"
 #include "output/Terminal.hpp"
 #include <iostream>
+
+// also make it so that non existing files are logged out correctly not just silent errors.
+// next up add saving to image
 
 int pixelsPerChar = 150;
 
 int main(int argc, char* argv[])
 {
+    Font font(SOURCE_DIR "/assets/fonts/Montserrat-Regular.ttf");
+    GlyphAtlas matchAtlas(font, Charset::ascii(), 8, 8);
+    GlyphAtlas renderAtlas(font, Charset::ascii(), 16, 32);
+
     Image img = ImageManager::loadImage(SOURCE_DIR "/assets/images/apple.png");
 
     Charset charset;

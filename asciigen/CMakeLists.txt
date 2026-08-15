@@ -14,6 +14,11 @@ target_compile_features(asciigen PUBLIC cxx_std_20)
 # PUBLIC, not PRIVATE: Image.hpp is a public header and includes stb/stb_image.h
 # for stbi_image_free, so stb's include path has to propagate to consumers too.
 target_link_libraries(asciigen PUBLIC stb)
+# Same reasoning: Font.hpp is expected to store FT_Face/FT_Library members
+# directly (matching how it already stores stbtt_fontinfo), so it needs
+# FreeType's headers visible too. Linking the `freetype` target also pulls in
+# its include directories automatically -- no separate include path to add.
+target_link_libraries(asciigen PUBLIC freetype)
 
 if(MSVC)
     target_compile_options(asciigen PRIVATE /W4 /permissive-)
