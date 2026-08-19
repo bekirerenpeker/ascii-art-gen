@@ -23,6 +23,7 @@ enum class CharsetName
 {
     Ascii,
     Blocks,
+    Braille,
     Ramp,
     Custom,
 };
@@ -122,6 +123,12 @@ struct FontOptions
     // 0 derives it from the requested image height, clamped so the atlas is
     // neither upscaled into blur nor rendered huge and thrown away.
     int renderSize = 0;
+
+    // Thickens the outline before rasterising, so a regular face renders bold
+    // with no second font file. Applied to the OUTPUT only -- bolding the
+    // matching atlas would change every glyph's ink coverage and quietly skew
+    // which glyph gets picked.
+    float bold = 0.f;
 };
 
 struct CharsetOptions
@@ -218,6 +225,10 @@ struct OutputOptions
     // align something to position within.
     int imageMargin = 0;
     float imageScale = 1.f;
+
+    // Width over height. Only grows the final picture; never crops it and never
+    // resamples the art. 0 leaves its shape alone.
+    float imageAspect = 0.f;
 };
 
 struct Options

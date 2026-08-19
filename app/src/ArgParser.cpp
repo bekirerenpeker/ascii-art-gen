@@ -1,5 +1,6 @@
 #include "ArgParser.hpp"
 #include "Presets.hpp"
+#include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -73,6 +74,32 @@ class Reader
 
         fail("--" + flag + " needs a value");
         return {};
+    }
+
+    // For flags whose value is optional. The next token is only taken when it
+    // is a positional that looks numeric -- otherwise "--font-bold photo.jpg"
+    // would eat the input path, and "--font-bold 2" would leave the 2 behind as
+    // a second input. Anything ambiguous can still be written with "=".
+    bool optionalValue(std::string& out)
+    {
+        const Token& t = m_tokens[m_index];
+        if (t.hasValue) {
+            out = t.value;
+            return true;
+        }
+
+        if (m_index + 1 >= m_tokens.size()) return false;
+        if (!m_tokens[m_index + 1].name.empty()) return false;
+
+        const std::string& next = m_tokens[m_index + 1].value;
+        if (next.empty()) return false;
+        if (!std::isdigit((unsigned char)next[0]) && next[0] != '.' && next[0] != '-'
+            && next[0] != '+')
+            return false;
+
+        m_index++;
+        out = next;
+        return true;
     }
 
     float floatValue(const std::string& flag)
@@ -167,6 +194,26 @@ bool parseRange(const std::string& text, std::pair<char32_t, char32_t>& out)
     return out.first <= out.second;
 }
 
+// "16:9", "16/9" or a plain ratio like 1.778.
+bool parseAspect(const std::string& text, float& out)
+{
+    const size_t sep = text.find_first_of(":/");
+
+    try {
+        if (sep == std::string::npos) out = std::stof(text);
+        else {
+            const float w = std::stof(text.substr(0, sep));
+            const float h = std::stof(text.substr(sep + 1));
+            if (h <= 0.f) return false;
+            out = w / h;
+        }
+    } catch (...) {
+        return false;
+    }
+
+    return out > 0.f;
+}
+
 bool boolValue(const std::string& v) { return v != "off" && v != "false" && v != "0"; }
 
 }   // namespace
@@ -241,8 +288,10 @@ Result parse(int argc, char* argv[], Options& out)
         // --- source ---
         if (n == "source-auto-levels") {
             out.source.autoLevels = true;
-            if (t.hasValue) {
-                std::istringstream ss(t.value);
+
+            std::string v;
+            if (r.optionalValue(v)) {
+                std::istringstream ss(v);
                 char comma = 0;
                 ss >> out.source.autoLevelsLow >> comma >> out.source.autoLevelsHigh;
             }
@@ -271,14 +320,27 @@ Result parse(int argc, char* argv[], Options& out)
         if (n == "font-path") { out.font.path = r.value(n); continue; }
         if (n == "font-match-size") { out.font.matchSize = r.intValue(n); continue; }
         if (n == "font-render-size") { out.font.renderSize = r.intValue(n); continue; }
+        if (n == "font-bold") {
+            std::string v;
+            out.font.bold = 1.f;
+            if (r.optionalValue(v)) {
+                try {
+                    out.font.bold = std::stof(v);
+                } catch (...) {
+                    r.fail("--font-bold expects a number, got \"" + v + "\"");
+                }
+            }
+            continue;
+        }
 
         // --- charset ---
         if (n == "charset") {
             const std::string v = r.value(n);
             if (v == "ascii") out.charset.name = CharsetName::Ascii;
             else if (v == "blocks") out.charset.name = CharsetName::Blocks;
+            else if (v == "braille") out.charset.name = CharsetName::Braille;
             else if (v == "ramp") out.charset.name = CharsetName::Ramp;
-            else r.fail("unknown charset \"" + v + "\" (ascii, blocks, ramp)");
+            else r.fail("unknown charset \"" + v + "\" (ascii, blocks, braille, ramp)");
             continue;
         }
         if (n == "charset-chars") {
@@ -407,6 +469,12 @@ Result parse(int argc, char* argv[], Options& out)
         }
         if (n == "image-width") { out.output.imageWidth = r.intValue(n); continue; }
         if (n == "image-height") { out.output.imageHeight = r.intValue(n); continue; }
+        if (n == "image-aspect") {
+            const std::string v = r.value(n);
+            if (!parseAspect(v, out.output.imageAspect))
+                r.fail("bad --image-aspect \"" + v + "\" (want 16:9 or 1.778)");
+            continue;
+        }
         if (n == "image-margin") { out.output.imageMargin = r.intValue(n); continue; }
         if (n == "image-scale") { out.output.imageScale = r.floatValue(n); continue; }
         if (n == "image-fit") {

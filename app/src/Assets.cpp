@@ -67,4 +67,29 @@ std::filesystem::path font(const std::string& name)
     return dir() / "fonts" / name;
 }
 
+std::filesystem::path defaultFont()
+{
+    static const std::filesystem::path instance = [] {
+        const std::string list = DEFAULT_FONTS;
+        std::error_code ec;
+
+        size_t start = 0;
+        while (start <= list.size()) {
+            const size_t end = list.find('|', start);
+            const std::string candidate =
+                list.substr(start, end == std::string::npos ? std::string::npos : end - start);
+
+            if (!candidate.empty() && std::filesystem::is_regular_file(candidate, ec))
+                return std::filesystem::path(candidate);
+
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+
+        return std::filesystem::path {};
+    }();
+
+    return instance;
+}
+
 }   // namespace Assets

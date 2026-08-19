@@ -6,6 +6,10 @@ Which characters the picture may be drawn with.
 
       ascii     printable ASCII, 0x20-0x7E. 95 glyphs
       blocks    space plus the Block Elements, U+2580-U+259F. 33 glyphs
+      braille   the whole Braille Patterns block, U+2800-U+28FF. 256 glyphs.
+                Eight independently placed dots per cell -- the densest
+                sub-cell vocabulary text has, against blocks' four quadrants.
+                U+2800 is empty and does the job of a space.
       ramp      " .:-=+*#%@" -- ordered light to dark, for --algo ramp
 
   --charset-chars "STR"
@@ -31,10 +35,14 @@ READ DIFFERENTLY BY DIFFERENT ALGORITHMS
 
 FONTS
 
-  blocks needs a font that actually contains the Block Elements. The bundled
-  Space Mono does not; Cascadia Mono does:
+  blocks and braille both need a font that actually contains those ranges.
+  Cascadia Mono and DejaVu Sans Mono do; plenty of others do not:
 
-    --charset blocks --font-path C:/Windows/Fonts/CascadiaMono.ttf
+    --charset blocks  --font-path C:/Windows/Fonts/CascadiaMono.ttf
+    --charset braille --font-path C:/Windows/Fonts/CascadiaMono.ttf
+
+  Pair them with --algo bitmask. Both are sub-cell masks rather than shapes,
+  and structure's matching does badly on them -- measured, not assumed.
 
   Characters the font lacks come out blank, silently.
 

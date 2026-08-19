@@ -13,9 +13,22 @@ override earlier ones.
                 --grid-gamma 0.7 --grid-vibrance 0.4 --grid-despeckle 0.1
                 --backdrop auto
 
-  wallpaper     photo, sized for a desktop.
-                photo + --image-width 1920 --image-height 1080
-                        --image-fit contain --image-align center
+  wallpaper-center   photo, floated in the middle of a 16:9 canvas.
+                photo + --font-render-size 64 --grid-height 35
+                        --image-aspect 16:9 --image-scale 0.6
+                        --backdrop-darken 0.115
+
+                A small grid so every glyph reads clearly, at 60% inside a
+                canvas GROWN to 16:9 around it -- nothing is resampled, the
+                shape is changed instead. The darker backdrop stops the empty
+                area competing with the art.
+
+  wallpaper-cover    photo, edge to edge.
+                photo + --font-render-size 64 --grid-height 80
+
+                Same glyph size, a much taller grid, so the picture comes out
+                enormous and fills the screen. No aspect and no scale: the
+                source's own shape is the canvas.
 
   terminal      photo, aimed at the screen.
                 photo + --color truecolor --stdout
@@ -28,6 +41,10 @@ override earlier ones.
                 --algo bitmask --algo-allow-background
                 --charset blocks --backdrop auto
                 (wants a font with Block Elements -- see --help charset)
+
+  braille       maximum sub-cell detail.
+                photo + --algo bitmask --charset braille --backdrop auto
+                (needs a font with U+2800-U+28FF -- see --help charset)
 
   plain         characters only, nothing clever.
                 --algo ramp --charset ramp --color none --no-grid-despeckle
@@ -42,5 +59,5 @@ override earlier ones.
 EXAMPLES
 
   asciigen photo.jpg --preset photo
-  asciigen photo.jpg --preset wallpaper --out wall.png
+  asciigen photo.jpg --preset wallpaper-center --out ./output
   asciigen photo.jpg --preset photo --grid-vibrance 0      turn one part off

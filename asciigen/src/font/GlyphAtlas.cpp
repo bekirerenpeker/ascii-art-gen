@@ -3,14 +3,14 @@
 #include "file_management/ImageManager.hpp"
 #include <cstdint>
 
-GlyphAtlas::GlyphAtlas(const Font& font, const Charset& charset, int cellW, int cellH)
+GlyphAtlas::GlyphAtlas(const Font& font, const Charset& charset, int cellW, int cellH, float boldness)
     : m_glyphCount(charset.size()), m_cellW(cellW), m_cellH(cellH)
 {
     m_glyphPixels = new uint8_t[cellW * cellH * charset.size()];
 
     uint8_t* begin = m_glyphPixels;
     for (int i = 0; i < charset.size(); i++) {
-        font.rasterize(charset.codepointAt(i), begin, cellW, cellH);
+        font.rasterize(charset.codepointAt(i), begin, cellW, cellH, boldness);
         begin += cellW * cellH;
     }
 }

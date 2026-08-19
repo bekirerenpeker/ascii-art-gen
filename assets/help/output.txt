@@ -7,6 +7,13 @@ for, and once you ask for one, printing stops unless you also pass --stdout.
       Write here. REPEATABLE -- every path given is produced from the one
       conversion. Format comes from the extension.
 
+      Give an existing FOLDER instead of a file and it writes
+      <folder>/<input name>.png. Convert a different picture and you get a
+      different file, with nothing to rename and nothing to clash.
+
+        asciigen assets/images/apple.png --out ./output
+            -> ./output/apple.png
+
   --stdout / --no-stdout
       Force printing on or off, whatever else was asked for.
 
@@ -35,6 +42,18 @@ PICTURE SIZE
                          bottom-left bottom bottom-right      (center)
   --image-margin N       pixels kept clear on every side           (0)
   --image-scale F        art size as a fraction of what is left  (1.0)
+  --image-aspect R       reshape the final picture, e.g. 16:9        (off)
+
+  --image-aspect only ever GROWS the picture: the short side is extended with
+  backdrop. Nothing is cropped and the art is never resampled, so a square
+  source becomes a 16:9 wallpaper at full glyph resolution instead of being
+  squeezed to fit. Use it when you want a big sharp render in a given shape
+  rather than a fixed pixel size:
+
+    --font-render-size 64 --image-scale 0.5 --image-aspect 16:9
+
+  Giving both --image-width and --image-height already fixes the shape, so
+  --image-aspect is ignored then.
 
   margin, scale and align all work with no --image-width/--image-height:
   the canvas is then whatever the grid came out as.

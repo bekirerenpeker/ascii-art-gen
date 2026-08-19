@@ -1,4 +1,5 @@
 #include "font/Font.hpp"
+#include "freetype/ftoutln.h"
 #include "stb/stb_image_resize2.h"
 
 #include <algorithm>
@@ -17,7 +18,7 @@ Font::Font(std::filesystem::path filepath)
     FT_New_Face(s_library, filepath.string().c_str(), 0, &m_face);
 }
 
-void Font::rasterize(char32_t c, uint8_t* outBuffer, int cellW, int cellH) const
+void Font::rasterize(char32_t c, uint8_t* outBuffer, int cellW, int cellH, float boldness) const
 {
     if (!m_face || !outBuffer || cellW <= 0 || cellH <= 0) return;
 
@@ -36,9 +37,24 @@ void Font::rasterize(char32_t c, uint8_t* outBuffer, int cellW, int cellH) const
         std::max(1, spanY > 0 ? static_cast<int>(renderH * upem / spanY) : renderH);
 
     if (FT_Set_Pixel_Sizes(m_face, 0, static_cast<FT_UInt>(pixelSize)) != 0) return;
-    if (FT_Load_Char(m_face, static_cast<FT_ULong>(c), FT_LOAD_RENDER) != 0) return;
+
+    // Loaded and rendered as two steps rather than one, so the outline can be
+    // thickened in between. Emboldening a rendered bitmap smears it; growing the
+    // outline first and rasterising after keeps the edges as clean as the
+    // original weight.
+    if (FT_Load_Char(m_face, static_cast<FT_ULong>(c), FT_LOAD_DEFAULT) != 0) return;
 
     const FT_GlyphSlot slot = m_face->glyph;
+
+    if (boldness > 0.f && slot->format == FT_GLYPH_FORMAT_OUTLINE) {
+        // 26.6 fixed point. 4% of the pixel size per unit of boldness lands
+        // close to a real bold face without closing up counters like 'e' and 'a'.
+        const FT_Pos strength = static_cast<FT_Pos>(boldness * pixelSize * 64.f * 0.04f);
+        if (strength > 0) FT_Outline_Embolden(&slot->outline, strength);
+    }
+
+    if (FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL) != 0) return;
+
     const FT_Bitmap& bmp = slot->bitmap;
 
     std::vector<uint8_t> cell(static_cast<size_t>(renderW) * renderH, 0);

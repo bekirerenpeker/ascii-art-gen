@@ -163,8 +163,8 @@ Image renderToSize(const CellBuffer& buffer, const GlyphAtlas& atlas, ImageRende
     // A missing width or height means "whatever the grid came out as", not "skip
     // all of this" -- scale and margin still have to work against that default
     // canvas, or asking for half size with no explicit picture size does nothing.
-    const bool resizing =
-        opts.width > 0 || opts.height > 0 || opts.margin > 0 || opts.scale != 1.f;
+    const bool resizing = opts.width > 0 || opts.height > 0 || opts.margin > 0
+                       || opts.scale != 1.f || opts.aspect > 0.f;
     if (!resizing) return natural;
 
     const int canvasW = opts.width > 0 ? opts.width : natural.width;
@@ -185,7 +185,19 @@ Image renderToSize(const CellBuffer& buffer, const GlyphAtlas& atlas, ImageRende
     if (fittedW != natural.width || fittedH != natural.height)
         natural = scale(natural, fittedW, fittedH);
 
-    return compose(natural, canvasW, canvasH, opts.align, opts.backgroundColor, margin);
+    // Grown only now, after the art has been sized against the ungrown canvas.
+    // Do it any earlier and the bigger box would make `contain` scale the art
+    // straight back up to fill it, which is the opposite of what aspect is for.
+    // Explicit width AND height already pin the shape, so aspect stays out.
+    int finalW = canvasW, finalH = canvasH;
+    if (opts.aspect > 0.f && !(opts.width > 0 && opts.height > 0)) {
+        const float current = (float)finalW / (float)finalH;
+
+        if (current < opts.aspect) finalW = (int)std::lround(finalH * opts.aspect);
+        else if (current > opts.aspect) finalH = (int)std::lround(finalW / opts.aspect);
+    }
+
+    return compose(natural, finalW, finalH, opts.align, opts.backgroundColor, margin);
 }
 
 bool save(

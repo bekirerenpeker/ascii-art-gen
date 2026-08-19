@@ -30,6 +30,25 @@ const Charset& Charset::blocks()
     return instance;
 }
 
+const Charset& Charset::braille()
+{
+    // The whole Braille Patterns block, U+2800-U+28FF. Every combination of a
+    // 2x4 dot grid, which is 256 glyphs and the densest sub-cell vocabulary
+    // available in text -- eight independently addressable dots per character
+    // against the block elements' four quadrants.
+    //
+    // U+2800 is the empty pattern and does the job of a space, so no separate
+    // blank is needed.
+    static const Charset instance = [] {
+        std::u32string glyphs;
+        glyphs.reserve(0x100);
+        for (char32_t cp = 0x2800; cp <= 0x28FF; ++cp) glyphs += cp;
+        return Charset(std::move(glyphs));
+    }();
+
+    return instance;
+}
+
 const Charset& Charset::ascii()
 {
     // Printable ASCII, space through tilde (32-126 both included)

@@ -16,6 +16,40 @@ target_link_libraries(asciigen_cli PRIVATE asciigen)
 # the correct behaviour.
 target_compile_definitions(asciigen_cli PRIVATE SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
+# Default font candidates, per OS, tried in order at runtime -- the first that
+# exists wins. Detected here rather than guessed at runtime, and kept as a list
+# rather than one path because distributions disagree about where fonts live.
+#
+# This is why no font needs to be redistributed with the project: every desktop
+# already has a monospace face, and shipping someone else's font means shipping
+# their licence terms along with it.
+if(WIN32)
+    set(ASCIIGEN_FONTS
+        "C:/Windows/Fonts/consola.ttf"
+        "C:/Windows/Fonts/CascadiaMono.ttf"
+        "C:/Windows/Fonts/lucon.ttf"
+        "C:/Windows/Fonts/cour.ttf")
+elseif(APPLE)
+    set(ASCIIGEN_FONTS
+        "/System/Library/Fonts/Menlo.ttc"
+        "/System/Library/Fonts/SFNSMono.ttf"
+        "/System/Library/Fonts/Monaco.ttf"
+        "/Library/Fonts/Courier New.ttf")
+else()
+    set(ASCIIGEN_FONTS
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+        "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
+        "/usr/share/fonts/dejavu/DejaVuSansMono.ttf"
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"
+        "/usr/share/fonts/liberation/LiberationMono-Regular.ttf"
+        "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf")
+endif()
+
+# Joined with '|' because a semicolon is CMake's own list separator and would
+# not survive being written into a compile definition.
+string(REPLACE ";" "|" ASCIIGEN_FONTS_JOINED "${ASCIIGEN_FONTS}")
+target_compile_definitions(asciigen_cli PRIVATE DEFAULT_FONTS="${ASCIIGEN_FONTS_JOINED}")
+
 # Target is asciigen_cli (distinct from the asciigen library target), but the
 # binary you actually run stays named asciigen(.exe).
 set_target_properties(asciigen_cli PROPERTIES OUTPUT_NAME asciigen)

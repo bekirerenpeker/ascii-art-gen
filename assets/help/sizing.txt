@@ -35,6 +35,12 @@ Three different sizes, resolved in this order. They are easy to confuse.
                         bottom-left bottom bottom-right
   --image-margin N      pixels kept clear on every side            (0)
   --image-scale F       art size as a fraction of what is left   (1.0)
+  --image-aspect R      reshape the final picture, e.g. 16:9      (off)
+
+  --image-aspect is the alternative to naming a pixel size. It grows the
+  canvas to the shape you asked for and leaves the art exactly as rendered --
+  no downscaling, no crop. Reach for it when a fixed --image-width would be
+  throwing away resolution you just paid for with --font-render-size.
 
   The art is fitted into a BOX INSIDE the picture, not into the whole picture.
   margin insets the canvas by a fixed number of pixels; scale then takes a

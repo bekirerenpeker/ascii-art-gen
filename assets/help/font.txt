@@ -1,7 +1,9 @@
 asciigen -- font
 
-  --font-path PATH                              (assets/fonts/SpaceMono-Regular)
-      The font glyphs are drawn from.
+  --font-path PATH                                   (system monospace)
+      The font glyphs are drawn from. Left alone, the first monospace face
+      your OS has is used -- Consolas on Windows, Menlo on macOS, DejaVu Sans
+      Mono on Linux. No font ships with the project.
 
   --font-match-size N                                             (16)
       Glyph height in pixels used for MATCHING. Bigger tells glyphs apart
@@ -16,6 +18,15 @@ asciigen -- font
       because it HINTS the stems onto the pixel grid; this does not, so at
       8x16 a letterform is a handful of grey blobs. 32 is the first size
       that reads as crisp, and 48-64 is worth it for a large wallpaper.
+
+
+  --font-bold [F]                                                  (0)
+      Thickens the outline before it is rasterised, so a regular face renders
+      bold with no second font file. Bare --font-bold means 1; 2 is heavy.
+
+      Applied to the OUTPUT only. Bolding the matching atlas would change
+      every glyph's ink coverage and quietly skew which glyph gets picked,
+      so the two are kept separate.
 
 
 WIDTH IS ALWAYS HALF THE HEIGHT

@@ -18,6 +18,7 @@ COMMON
   --color MODE             truecolor | ansi16 | none          (truecolor)
   --image-width N          output picture width in pixels
   --backdrop MODE          none | auto | #RRGGBB                   (none)
+  --font-bold [F]          synthesise bold from a regular face         (0)
 
 HELP TOPICS
   input        the file coming in, and text passthrough
@@ -36,7 +37,7 @@ HELP TOPICS
 EXAMPLES
   asciigen photo.jpg
   asciigen photo.jpg --preset photo
-  asciigen photo.jpg --preset wallpaper --out wall.png
+  asciigen photo.jpg --preset wallpaper-center --out ./output
   asciigen photo.jpg --algo bitmask --charset blocks --out art.png
   asciigen photo.jpg --color none --grid-width 100 --out art.txt
 

@@ -54,9 +54,16 @@ int passthrough(const Options& opts)
     return 0;
 }
 
+// A system font is the default rather than a bundled one, so the project ships
+// no third-party font and no third-party licence. A copy left in assets/fonts is
+// still honoured, which keeps a checkout that has one working unchanged.
 std::filesystem::path resolveFont(const Options& opts)
 {
     if (!opts.font.path.empty()) return opts.font.path;
+
+    const std::filesystem::path system = Assets::defaultFont();
+    if (!system.empty()) return system;
+
     return Assets::font("SpaceMono-Regular.ttf");
 }
 
@@ -64,6 +71,7 @@ Charset buildCharset(const Options& opts)
 {
     switch (opts.charset.name) {
     case CharsetName::Blocks: return Charset::blocks();
+    case CharsetName::Braille: return Charset::braille();
     case CharsetName::Ramp: return Charset(opts.algo.rampChars);
     case CharsetName::Custom: break;
     case CharsetName::Ascii: break;
@@ -100,10 +108,22 @@ void resolveGridSize(const Options& opts, const Image& img, int& cols, int& rows
     else if (rows > 0 && cols <= 0) cols = std::max(1, (int)std::lround((double)rows * img.width * 2.0 / img.height));
 }
 
+// A path that names an existing directory means "put it in here, called after
+// the input". Saves renaming the output every time you convert a new picture,
+// and png is the default because that is what a directory cannot tell us.
+std::filesystem::path resolveOutputPath(const Options& opts, const std::string& given)
+{
+    std::error_code ec;
+    if (!std::filesystem::is_directory(given, ec)) return given;
+
+    const std::string stem = std::filesystem::path(opts.input.path).stem().string();
+    return std::filesystem::path(given) / (stem + ".png");
+}
+
 bool wantsImage(const Options& opts)
 {
     for (const std::string& p : opts.output.paths) {
-        const std::string ext = lowerExtension(p);
+        const std::string ext = lowerExtension(resolveOutputPath(opts, p));
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") return true;
     }
     return false;
@@ -260,7 +280,13 @@ int run(const Options& opts)
         backdrop = buffer.suggestedBackground(opts.backdrop.darken, opts.backdrop.lumaThreshold);
     else if (opts.backdrop.mode == BackdropMode::Fixed) backdrop = opts.backdrop.color;
 
-    if (opts.backdrop.mode != BackdropMode::None) buffer.fillBackground(backdrop);
+    // Not when the selector solved a background per cell. Painting one colour
+    // over all of them throws that second colour away and leaves the backdrop
+    // showing through wherever a glyph does not cover -- which reads as a dark
+    // seam between every pair of blocks. The backdrop is still what pads the
+    // picture; it just has no business inside the grid here.
+    if (opts.backdrop.mode != BackdropMode::None && !opts.algo.allowBackground)
+        buffer.fillBackground(backdrop);
 
     const std::string text =
         AnsiRenderer::render(buffer, charset, {.depth = toDepth(opts.output.color)});
@@ -287,11 +313,13 @@ int run(const Options& opts)
                           : 32;
 
         renderH = std::max(2, renderH);
-        renderAtlas = GlyphAtlas(font, charset, std::max(1, renderH / 2), renderH);
+        renderAtlas = GlyphAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
     }
 
     int status = 0;
-    for (const std::string& path : opts.output.paths) {
+    for (const std::string& given : opts.output.paths) {
+        const std::filesystem::path path = resolveOutputPath(opts, given);
+
         if (!opts.output.overwrite && std::filesystem::exists(path)) {
             std::cerr << "asciigen: \"" << path << "\" exists (use --overwrite)\n";
             status = 6;
@@ -310,6 +338,7 @@ int run(const Options& opts)
                  .align = toAlign(opts.output.align),
                  .margin = opts.output.imageMargin,
                  .scale = opts.output.imageScale,
+                 .aspect = opts.output.imageAspect,
                  .backgroundColor = backdrop}
             );
         } else if (ext == ".ans") {

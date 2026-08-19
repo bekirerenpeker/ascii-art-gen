@@ -54,6 +54,14 @@ struct ImageRenderOptions
     int margin = 0;
     float scale = 1.f;
 
+    // Width divided by height, e.g. 16.0/9.0. Only ever GROWS the canvas -- the
+    // short side is extended with backdrop, nothing is cropped and the art is
+    // never resampled to suit. That is the point: it reshapes the final picture
+    // without touching the render, so a square source can become a 16:9
+    // wallpaper at full glyph resolution. 0 leaves the shape alone, and giving
+    // both width and height ignores it, since that already fixes the shape.
+    float aspect = 0.f;
+
     // Painted behind everything. Set this to whatever the cells' own background
     // was filled with, or the padding will not match the art it surrounds.
     RGB backgroundColor {0, 0, 0};

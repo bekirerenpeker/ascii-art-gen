@@ -1,6 +1,7 @@
 # Build output
 build/
 out/
+output/
 cmake-build-*/
 
 # CMake artifacts (in case of an in-source configure)
@@ -37,3 +38,18 @@ Makefile
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Third-party content that is not ours to redistribute.
+#
+# Source photographs used for testing -- rendering them is fine, publishing them
+# is not, unless you own them. Drop your own pictures in here; nothing in the
+# project depends on any particular file being present.
+assets/images/
+
+# Bundled fonts. The default is now whichever monospace face the OS already has
+# (picked per-OS in app/CMakeLists.txt), so no font needs shipping. A copy left
+# here still works locally and stays out of the repository.
+assets/fonts/
+
+# assets/showcase/ is deliberately NOT ignored -- those are rendered output,
+# committed so the README has something to show.

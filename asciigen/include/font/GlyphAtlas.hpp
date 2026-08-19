@@ -16,7 +16,7 @@ class GlyphAtlas
 
   public:
     GlyphAtlas() = default;
-    GlyphAtlas(const Font& font, const Charset& charset, int cellW, int cellH);
+    GlyphAtlas(const Font& font, const Charset& charset, int cellW, int cellH, float boldness = 0.f);
     ~GlyphAtlas();
 
     // Movable, never copyable. It owns a raw allocation, so the implicit copy

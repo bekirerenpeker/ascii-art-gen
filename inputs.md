@@ -18,7 +18,7 @@ file, or a PNG.
 asciigen photo.jpg                                    # straight to the terminal
 asciigen photo.jpg --out art.png --image-width 1900   # a 1900px-wide picture
 asciigen photo.jpg --out art.ans --out art.txt        # two files at once
-asciigen photo.jpg --preset wallpaper                 # 1920x1080, auto backdrop
+asciigen photo.jpg --preset wallpaper-cover           # a big PNG, auto backdrop
 asciigen notes.ans                                    # just print an existing .ans
 ```
 
@@ -212,6 +212,14 @@ Three different sizes, and they're easy to confuse. They resolve **in this order
 | `--image-align` | `POS` | `center` | `top-left` `top` `top-right` `left` `center` `right` `bottom-left` `bottom` `bottom-right` |
 | `--image-margin` | `N` | `0` | Pixels kept clear on every side |
 | `--image-scale` | `F` | `1.0` | Art size as a fraction of what's left |
+| `--image-aspect` | `R` | off | Reshape the final picture, e.g. `16:9` |
+
+**`--image-aspect` only ever grows the canvas.** The short side is extended with backdrop —
+nothing cropped, art never resampled. It's the alternative to naming a pixel size: a square
+source becomes a 16:9 wallpaper at full glyph resolution rather than being squeezed to fit.
+Reach for it when a fixed `--image-width` would throw away resolution you just paid for with
+`--font-render-size`. Ignored when both width and height are given, since those already fix
+the shape.
 
 **The art is fitted into a box *inside* the canvas, not into the canvas itself.** `margin`
 insets by a fixed number of pixels, `scale` then takes a fraction of what remains. Whatever
@@ -402,7 +410,8 @@ A short list of things that are legal but won't do what you hoped, and warn once
 
 | Preset | Expands to |
 |---|---|
-| `wallpaper` | `--algo structure --image-width 1920 --image-height 1080 --backdrop auto --source-auto-levels --grid-gamma 0.7 --grid-vibrance 0.4` |
+| `wallpaper-center` | `photo` + `--font-render-size 64 --grid-height 35 --image-aspect 16:9 --image-scale 0.6 --backdrop-darken 0.115` |
+| `wallpaper-cover` | `photo` + `--font-render-size 64 --grid-height 80` |
 | `terminal` | `--algo structure --color truecolor --stdout` |
 | `lineart` | `--algo ramp --charset ramp --edge scharr --edge-threshold 0.2 --color none` |
 | `poster` | `--algo bitmask --algo-allow-background --charset blocks --image-width 2400 --backdrop auto` |
@@ -418,7 +427,7 @@ A short list of things that are legal but won't do what you hoped, and warn once
 asciigen photo.jpg
 
 # Desktop wallpaper, backdrop picked from the photo
-asciigen photo.jpg --preset wallpaper --out wall.png
+asciigen photo.jpg --preset wallpaper-center --out ./output
 
 # Exactly 1900x1200, nothing cropped, art centred
 asciigen photo.jpg --out art.png --image-width 1900 --image-height 1200 \

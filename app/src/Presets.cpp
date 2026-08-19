@@ -30,12 +30,31 @@ bool apply(const std::string& name, Options& out)
         return true;
     }
 
-    if (name == "wallpaper") {
+    // Two wallpapers, because the two ways of filling a screen want opposite
+    // settings. Both render at 64px glyphs -- large enough that nothing is
+    // upscaled later, which is where sharpness is normally lost.
+    //
+    // Centred: a small grid, so each glyph reads clearly, floated at 60% inside
+    // a 16:9 canvas grown around it. Nothing is resampled; the canvas is
+    // reshaped instead. The darker backdrop keeps the empty area from competing
+    // with the art.
+    if (name == "wallpaper-center") {
         photo(out);
-        out.output.imageWidth = 1920;
-        out.output.imageHeight = 1080;
-        out.output.fit = ImageFit::Contain;
-        out.output.align = ImageAlign::Center;
+        out.font.renderSize = 64;
+        out.grid.height = 35;
+        out.output.imageAspect = 16.f / 9.f;
+        out.output.imageScale = 0.6f;
+        out.backdrop.darken = 0.115f;
+        return true;
+    }
+
+    // Covering: a tall grid at the same glyph size, so the picture comes out
+    // enormous and edge to edge. No aspect and no scale -- the source's own
+    // shape is the canvas.
+    if (name == "wallpaper-cover") {
+        photo(out);
+        out.font.renderSize = 64;
+        out.grid.height = 80;
         return true;
     }
 
@@ -59,6 +78,14 @@ bool apply(const std::string& name, Options& out)
         out.algo.name = AlgoName::Bitmask;
         out.algo.allowBackground = true;
         out.charset.name = CharsetName::Blocks;
+        out.backdrop.mode = BackdropMode::Auto;
+        return true;
+    }
+
+    if (name == "braille") {
+        photo(out);
+        out.algo.name = AlgoName::Bitmask;
+        out.charset.name = CharsetName::Braille;
         out.backdrop.mode = BackdropMode::Auto;
         return true;
     }
@@ -92,7 +119,8 @@ bool apply(const std::string& name, Options& out)
 
 std::vector<std::string> names()
 {
-    return {"photo", "wallpaper", "terminal", "lineart", "blocks", "plain", "gruvbox", "nord"};
+    return {"photo",   "wallpaper-center", "wallpaper-cover", "terminal", "lineart",
+            "blocks",  "braille",          "plain",           "gruvbox",  "nord"};
 }
 
 }   // namespace Presets

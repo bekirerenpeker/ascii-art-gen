@@ -21,6 +21,7 @@ class Charset
 
     static const Charset& ascii();
     static const Charset& blocks();
+    static const Charset& braille();
 
   private:
     std::u32string m_glyphs;

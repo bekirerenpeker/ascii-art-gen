@@ -19,5 +19,8 @@ class Font
   public:
     Font(std::filesystem::path filepath);
 
-    void rasterize(char32_t c, uint8_t* outBuffer, int cellW, int cellH) const;
+    // boldness thickens the outline before it is rasterised, so a regular face
+    // can render bold without a second font file. 0 is the face as drawn; 1 is
+    // about a normal bold weight.
+    void rasterize(char32_t c, uint8_t* outBuffer, int cellW, int cellH, float boldness = 0.f) const;
 };

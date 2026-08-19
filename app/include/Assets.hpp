@@ -15,4 +15,8 @@ const std::filesystem::path& dir();
 std::filesystem::path help(const std::string& page);
 std::filesystem::path font(const std::string& name);
 
+// First system monospace font that exists, from the per-OS list CMake baked in.
+// Empty if none of them are present.
+std::filesystem::path defaultFont();
+
 };   // namespace Assets
