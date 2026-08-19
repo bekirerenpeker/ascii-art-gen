@@ -1,8 +1,13 @@
 #include "file_management/ImageManager.hpp"
+#include "core/CellBuffer.hpp"
+#include "core/Image.hpp"
+#include "font/GlyphAtlas.hpp"
 #include "stb/stb_image_write.h"
 #include "stb/stb_image.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <iostream>
 #include <string>
 
 namespace ImageManager {
@@ -12,6 +17,8 @@ Image loadImage(std::filesystem::path filepath, int desiredChannels)
     Image img;
     int channelsInFile;
 
+    img.stbAllocated = true;
+
     stbi_set_flip_vertically_on_load(1);
     img.pixels = stbi_load(
         filepath.string().c_str(), &img.width, &img.height, &channelsInFile, desiredChannels
@@ -19,6 +26,7 @@ Image loadImage(std::filesystem::path filepath, int desiredChannels)
 
     if (!img.pixels) {
         img.width = img.height = img.depth = 0;
+        std::cout << "couldnt load image from " << filepath << "\n";
         return img;
     }
 
@@ -40,6 +48,8 @@ bool saveImage(std::filesystem::path filepath, const Image& img)
 
     if (ext == ".png") return savePng(filepath, img);
     if (ext == ".jpg" || ext == ".jpeg") return saveJpg(filepath, img);
+
+    std::cout << "unsupported extension for images: " << ext << "\n";
     return false;
 }
 

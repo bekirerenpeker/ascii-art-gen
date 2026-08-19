@@ -7,6 +7,10 @@
 class Font
 {
   private:
+    // Glyphs are rendered this many times larger than the target cell so the
+    // downscale has detail to work with.
+    static constexpr int kSupersample = 4;
+
     static bool s_libInitialized;
     static FT_Library s_library;
 
@@ -15,5 +19,5 @@ class Font
   public:
     Font(std::filesystem::path filepath);
 
-    void rasterize(char32_t c, uint8_t* outBuffer, int width, int height) const;
+    void rasterize(char32_t c, uint8_t* outBuffer, int cellW, int cellH) const;
 };

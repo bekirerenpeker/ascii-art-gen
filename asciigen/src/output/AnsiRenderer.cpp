@@ -44,6 +44,8 @@ std::string render(const CellBuffer& buffer, const Charset& charset, AnsiRenderO
     std::string out;
     out.reserve(buffer.width() * buffer.height() * 42 + buffer.height() * 8);
 
+    // Buffers are bottom-up; terminals draw top-down. Reversing here is this
+    // function's problem, not the pipeline's.
     for (int y = buffer.height() - 1; y >= 0; y--) {
         for (int x = 0; x < buffer.width(); x++) {
             const Cell& cell = buffer.getAt(x, y);
