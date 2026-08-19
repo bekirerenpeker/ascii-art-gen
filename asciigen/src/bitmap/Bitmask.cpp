@@ -1,6 +1,7 @@
 #include "bitmap/Bitmask.hpp"
 #include "bitmap/Resample.hpp"
 #include "dithering/Dithering.hpp"
+#include "filters/Blur.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -45,6 +46,34 @@ void generate(
     // single heaviest glyph.
     if (maxCoverage <= 0.f) maxCoverage = 1.f;
 
+    // Blurred twin of every glyph mask, built once. Matching these instead of the
+    // raw masks is what buys misalignment tolerance: a stroke a pixel off still
+    // overlaps, where the sharp masks would score it as a total miss.
+    const bool soft = opts.softness > 0.f && !opts.allowBackground;
+    std::vector<float> blurMask;
+    std::vector<float> blurMaskMean(glyphCount, 0.f);
+    std::vector<float> blurMaskStd(glyphCount, 0.f);
+
+    if (soft) {
+        blurMask.resize((size_t)glyphCount * (size_t)cellPx);
+        std::vector<float> sharp(cellPx);
+
+        for (int g = 0; g < glyphCount; g++) {
+            const uint8_t* mask = atlas.getGlyphBegin(g);
+            for (int i = 0; i < cellPx; i++) sharp[i] = mask[i] / 255.f;
+
+            float* dst = blurMask.data() + (size_t)g * (size_t)cellPx;
+            Blur::box(sharp.data(), dst, atlasW, atlasH, opts.blurRadius);
+
+            float sum = 0.f, sumSq = 0.f;
+            for (int i = 0; i < cellPx; i++) sum += dst[i], sumSq += dst[i] * dst[i];
+
+            blurMaskMean[g] = sum / cellPx;
+            blurMaskStd[g] =
+                std::sqrt(std::max(0.f, sumSq - cellPx * blurMaskMean[g] * blurMaskMean[g]));
+        }
+    }
+
     // One resample for the whole frame at atlas resolution, then dither it: the
     // plane is where tones actually get quantised down to glyph coverages.
     Image plane;
@@ -53,6 +82,7 @@ void generate(
 
     std::vector<RGB> tile(cellPx);
     std::vector<float> tileLuma(cellPx);
+    std::vector<float> blurLuma(soft ? cellPx : 0);
 
     for (int cy = 0; cy < outBuffer.height(); cy++) {
         for (int cx = 0; cx < outBuffer.width(); cx++) {
@@ -76,6 +106,24 @@ void generate(
                 lumaVar += d * d;
             }
             const float lumaStd = std::sqrt(lumaVar);
+
+            // The tile gets the same treatment as the masks, or the two sides of
+            // the correlation would be measuring detail at different scales.
+            float blurMean = 0.f, blurStd = 0.f;
+            if (soft) {
+                Blur::box(tileLuma.data(), blurLuma.data(), atlasW, atlasH, opts.blurRadius);
+
+                float sum = 0.f;
+                for (int i = 0; i < cellPx; i++) sum += blurLuma[i];
+                blurMean = sum / cellPx;
+
+                float var = 0.f;
+                for (int i = 0; i < cellPx; i++) {
+                    const float d = blurLuma[i] - blurMean;
+                    var += d * d;
+                }
+                blurStd = std::sqrt(var);
+            }
 
             float bestScore = -1e30f;
             float bestW = 0;
@@ -115,6 +163,25 @@ void generate(
                     float corr = 0.f;
                     if (wStd > 1e-4f && lumaStd > 1e-4f)
                         corr = (lw - cellPx * lumaMean * wMean) / (lumaStd * wStd);
+
+                    // Same correlation, both sides blurred, so a stroke sitting a
+                    // pixel off the image's still overlaps instead of scoring zero.
+                    if (soft) {
+                        const float* bm = blurMask.data() + (size_t)g * (size_t)cellPx;
+
+                        float corrBlur = 0.f;
+                        if (blurMaskStd[g] > 1e-4f && blurStd > 1e-4f) {
+                            float lwBlur = 0;
+                            for (int i = 0; i < cellPx; i++) lwBlur += blurLuma[i] * bm[i];
+
+                            corrBlur = (lwBlur - cellPx * blurMean * blurMaskMean[g])
+                                     / (blurStd * blurMaskStd[g]);
+                        }
+
+                        // Mixed, not added: the two weights sum to 1 so the coverage
+                        // term keeps the same relative pull at any softness.
+                        corr = (1.f - opts.softness) * corr + opts.softness * corrBlur;
+                    }
 
                     score = corr - 4.f * coverErr * coverErr;
                 }
@@ -166,7 +233,7 @@ void generate(
                 }
 
                 cell.fg = {toByte(fr), toByte(fg_), toByte(fb)};
-                cell.bg = {0, 0, 0};
+                cell.bg = opts.backgroundColor;
             }
         }
     }

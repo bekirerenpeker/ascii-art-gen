@@ -19,11 +19,14 @@
 | `Terminal` (VT mode, UTF-8, size, isTty) | done | `output/Terminal` |
 | `Ramp` algorithm | done | `bitmap/Ramp` |
 | Value-boost for color (glyph carries brightness, color carries hue) | discussed, not built | `bitmap/Ramp` (upstream of `toGlyphColor`) |
-| Glyph rasterization / font atlas | **not started** | would be `font_loading/` |
-| Resample stage (subcell resolution) | **not started** | needed before bitmask/feature |
-| Any algorithm besides `ramp` | **not started** | |
-| Dithering | **not started** | |
-| Edge detection | **not started** | |
+| Glyph rasterization / font atlas (FreeType) | done | `font/Font`, `font/GlyphAtlas` |
+| Resample stage (subcell resolution) | done | `bitmap/Resample` |
+| `bitmask` algorithm (correlation + coverage match) | done | `bitmap/Bitmask` |
+| Ordered (Bayer) dithering | done | `dithering/Bayer4` |
+| Contrast-adaptive dither amplitude | done | `dithering/BlockContrast` |
+| Edge detection (Scharr → directional glyph overlay) | done, default off | `edges/` |
+| Reconstruction quality metric (SSIM / RMSE / PSNR) | done | `quality/` |
+| `feature` / `gradient` / `template` / `dct` / `ssim` selectors | **not started** | see §9 |
 | argparser → Options → dispatch | in progress, by you | `app/` |
 
 Everything below builds on this, in the order I'd actually do it.
@@ -188,3 +191,80 @@ exists, and premature before it.
 Steps 1–6 are all inside `asciigen` and testable the same way `Ramp` has been — by hand, from
 `main.cpp`, no CLI required. Step 7 is what turns the project into an actual command-line
 tool instead of a library you drive by editing `main.cpp`.
+
+---
+
+## 9. Next up: a better shape matcher
+
+Reference for all of this: **Xu, Zhang & Wong, "Structure-based ASCII Art" (SIGGRAPH Asia
+2010)**. Its finding is that humans match glyph to tile *tolerantly* — small misalignment
+doesn't break the match for a reader, but it does break every per-pixel metric. That's the
+gap between what `bitmask` scores and what your eye scores.
+
+Three known deficiencies in the current `Bitmask` scoring, in order of how much they cost:
+
+1. **No misalignment tolerance.** `corr` is a per-pixel dot product. A diagonal sitting 2px
+   off from where `/`'s stroke sits scores as a miss, even though `/` is plainly the right
+   glyph. Glyphs land on a rigid grid; image features don't.
+2. **Uniform pixel weighting.** Side bearings and leading make cell borders systematically
+   emptier than centers, but every pixel is treated as equally informative.
+3. **Single scale.** Full-resolution correlation is dominated by fine detail, with no notion
+   of "roughly the right shape, roughly the right place" to reward first.
+
+### TODO 1 — Reconstruction quality metric ✅ done
+
+`quality/`. Composites chosen glyph masks back to pixels (`Reconstruct`) and scores against
+the undithered resampled source: SSIM, luma/colour RMSE, PSNR. Prerequisite for everything
+below — "which selector is best" is not answerable by eye across five of them.
+
+**Known blind spot: it cannot score dithering.** Dither trades local per-cell accuracy for
+tonal range perceived at a distance, so a local metric marks it down every time (measured:
+SSIM 0.46 → 0.43). Use it to compare *selectors*, never to tune dither. Fixing that needs a
+second pass at a blurred/downscaled resolution — the "squint test" — which isn't built.
+
+### TODO 2 — Misalignment tolerance in `bitmask` ⚠️ built, measured, does not help
+
+`BitmaskOptions::softness` (0–1) mixes a blurred correlation into the sharp one;
+`blurRadius` sets how far a stroke may drift. Blurred glyph twins are precomputed once per
+call, the tile is blurred to match, and `Blur::box` (`bitmap/Blur`) is the separable kernel.
+`softness = 0` is bit-identical to the original scoring — verified, same metric to 4dp.
+
+**Measured on the Porsche, dither off, so only the selector moves:**
+
+| softness | ssim (r=1) | ssim (r=2) | ssim (blocks, r=1) |
+|---|---|---|---|
+| 0.0 | **0.4598** | **0.4598** | **0.5550** |
+| 0.3 | 0.4587 | 0.4569 | 0.5549 |
+| 0.5 | 0.4579 | 0.4554 | 0.5543 |
+| 1.0 | 0.4571 | 0.4530 | 0.5545 |
+
+Monotonically worse, on both charsets, at both radii — and worse faster at the larger
+radius, which confirms the knob is live rather than inert. The ASCII-vocabulary hypothesis
+is disproven too: blocks has a denser vocabulary and shows the same sign, just flatter.
+
+Caveat worth keeping: the metric compares a *sharp* reconstruction against a *sharp* source,
+so it is structurally somewhat unkind to a matcher optimising for blurred agreement. But the
+effect is consistent and negative, and there is no positive evidence on the other side. Left
+in at `softness = 0` — free to keep, available to eyeball, not on by default.
+
+The lesson for TODO 3: pixel-space blurring is not what "misalignment tolerance" means in
+the Xu paper. They deform the *structure*, not the intensities. Getting the tolerance from
+descriptor binning instead is a genuinely different mechanism, not a stronger version of
+this one — so this result does not predict that one.
+
+### TODO 3 — `feature`: descriptor matching
+
+The real answer, and a genuinely different matcher rather than a tweak. Per tile and per
+glyph build a HOG-style descriptor — 2×4 subcell blocks × 4 orientation bins,
+magnitude-weighted — and compare by cosine similarity. Misalignment tolerance is structural
+here: binning discards exact position by construction, and orientation is matched explicitly
+instead of emerging as a side effect of intensity correlation. This merges what §4 lists
+separately as `feature` and `gradient`.
+
+`ssim` from §4 is the ceiling to measure these against once they exist, not a shipping
+selector — it is far too slow for video.
+
+**Caveat on "best":** with ASCII the glyph vocabulary is often the bottleneck, not the
+metric — no scoring function can produce a shape the charset doesn't contain. These upgrades
+should show up much more strongly on blocks and braille, where the vocabulary covers the
+space densely. Measure on both, not on ASCII alone.

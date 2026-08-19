@@ -15,7 +15,12 @@ enum class ColorDepth
 
 struct AnsiRenderOptions
 {
+    // Colour escapes emitted per cell. None writes bare glyphs, which is also what
+    // you want when piping to a file that should stay readable as plain text.
     ColorDepth depth = ColorDepth::TrueColor;
+
+    // Reserved for clear-screen / cursor-home framing around the output, for
+    // redrawing in place during video playback. Not read by render() yet.
     bool screenControls = false;
 };
 

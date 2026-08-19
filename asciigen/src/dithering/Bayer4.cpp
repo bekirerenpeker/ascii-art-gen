@@ -4,7 +4,7 @@
 
 namespace Dithering {
 
-void applyBayer4(Image& image, int levels, int blockW, int blockH)
+void applyBayer4(Image& image, int levels, int blockW, int blockH, const ContrastField& gate)
 {
     if (!image.pixels || levels < 2 || blockW < 1 || blockH < 1) return;
 
@@ -25,14 +25,18 @@ void applyBayer4(Image& image, int levels, int blockW, int blockH)
 
     for (int y = 0; y < image.height; y++) {
         for (int x = 0; x < image.width; x++) {
-            PixelColor c = image.getAt(x, y);
-
             // Indexed by block, not pixel: the unit being quantised downstream is
             // a cell, so a bias that varied within one would just average back out.
-            const int bx = (x / blockW) & 3;
-            const int by = (y / blockH) & 3;
-            const float bias = (kBayer[by][bx] / 16.f - 0.5f) * step;
+            const int blockX = x / blockW;
+            const int blockY = y / blockH;
 
+            const float amplitude = gate.at(blockX, blockY);
+            if (amplitude <= 0.f) continue;
+
+            const float bias =
+                (kBayer[blockY & 3][blockX & 3] / 16.f - 0.5f) * step * amplitude;
+
+            PixelColor c = image.getAt(x, y);
             c.r = (byte)std::clamp(std::round(c.r + bias), 0.f, 255.f);
             c.g = (byte)std::clamp(std::round(c.g + bias), 0.f, 255.f);
             c.b = (byte)std::clamp(std::round(c.b + bias), 0.f, 255.f);
