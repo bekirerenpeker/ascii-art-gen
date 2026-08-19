@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 
 using namespace App;
 
@@ -158,6 +159,34 @@ ImageRenderer::Align toAlign(ImageAlign a)
     return ImageRenderer::Align::Center;
 }
 
+// How many genuinely different shapes the atlas holds. Counting inked glyphs is
+// not enough: a font missing a codepoint hands back .notdef, which in most faces
+// is a box outline and therefore very much inked. Every glyph then rasterises to
+// the SAME box, they all score identically, selection collapses onto whichever
+// comes first, and the picture comes out uniform -- with nothing in the output
+// to explain why. Distinctness is what actually matters.
+int distinctGlyphCount(const GlyphAtlas& atlas)
+{
+    const int cellPx = atlas.glpyhSize();
+    std::set<uint64_t> shapes;
+
+    for (int g = 0; g < atlas.glyphCount(); g++) {
+        const uint8_t* mask = atlas.getGlyphBegin(g);
+
+        // FNV-1a over the mask. Collisions would only ever under-report, and a
+        // false "looks fine" is the harmless direction here.
+        uint64_t h = 1469598103934665603ull;
+        for (int i = 0; i < cellPx; i++) {
+            h ^= mask[i];
+            h *= 1099511628211ull;
+        }
+
+        shapes.insert(h);
+    }
+
+    return (int)shapes.size();
+}
+
 AnsiRenderer::ColorDepth toDepth(ColorMode c)
 {
     switch (c) {
@@ -225,6 +254,16 @@ int run(const Options& opts)
     // the choice of face.
     const int matchH = std::max(2, opts.font.matchSize);
     GlyphAtlas matchAtlas(font, charset, std::max(1, matchH / 2), matchH);
+
+    // Fewer than two distinct shapes means there is nothing to choose between,
+    // and the result is a uniform picture. Worth saying out loud -- the usual
+    // cause is a charset the font simply does not cover.
+    if (distinctGlyphCount(matchAtlas) < 2) {
+        std::cerr << "asciigen: \"" << fontPath.filename().string()
+                  << "\" has no glyphs for this charset, so the output will be blank.\n"
+                  << "  pick a font that covers it, e.g.\n"
+                  << "  --font-path C:/Windows/Fonts/CascadiaMono.ttf\n";
+    }
 
     switch (opts.algo.name) {
     case AlgoName::Ramp:
