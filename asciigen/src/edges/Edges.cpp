@@ -5,24 +5,25 @@
 
 namespace Edges {
 
-void apply(const Image& image, CellBuffer& buffer, const Charset& charset)
+bool apply(const Image& image, CellBuffer& buffer, Charset& charset)
 {
-    if (!options.enabled) return;
-    if (!image.pixels || buffer.width() <= 0 || buffer.height() <= 0) return;
+    if (!options.enabled) return false;
+    if (!image.pixels || buffer.width() <= 0 || buffer.height() <= 0) return false;
 
     // Bucket order matches the angle sweep in the detector: 0, 45, 90, 135 degrees.
     static const char32_t kLineGlyphs[4] = {U'-', U'/', U'|', U'\\'};
 
-    int glyphIndex[4];
-    bool anyAvailable = false;
-    for (int b = 0; b < 4; b++) {
-        glyphIndex[b] = charset.indexOf(kLineGlyphs[b]);
-        anyAvailable |= glyphIndex[b] >= 0;
-    }
+    // Appended rather than merely looked up. A ramp or blocks charset has some of
+    // these or none, and looking them up meant one direction got stamped while
+    // the others silently did not. Appending puts them past every index already
+    // in use, so nothing already chosen shifts -- and doing it here, after
+    // selection, is what stops the selector treating them as ordinary glyphs.
+    const uint16_t sizeBefore = charset.size();
 
-    // Blocks and braille carry none of these; stamping the nearest thing they do
-    // have would be worse than leaving the base selection untouched.
-    if (!anyAvailable) return;
+    int glyphIndex[4];
+    for (int b = 0; b < 4; b++) glyphIndex[b] = charset.append(kLineGlyphs[b]);
+
+    const bool charsetGrew = charset.size() != sizeBefore;
 
     EdgeField field;
     switch (options.algorithm) {
@@ -41,12 +42,11 @@ void apply(const Image& image, CellBuffer& buffer, const Charset& charset)
             if (field.magnitude[i] < options.threshold) continue;
             if (field.coherence[i] < options.coherence) continue;
 
-            const int g = glyphIndex[field.bucket[i]];
-            if (g < 0) continue;
-
-            buffer.getAt(x, y).glyphIndex = (uint16_t)g;
+            buffer.getAt(x, y).glyphIndex = (uint16_t)glyphIndex[field.bucket[i]];
         }
     }
+
+    return charsetGrew;
 }
 
 }   // namespace Edges

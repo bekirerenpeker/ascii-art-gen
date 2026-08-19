@@ -1,0 +1,68 @@
+asciigen -- algorithm
+
+  --algo NAME                              ramp | bitmask | structure
+                                                           (structure)
+
+  ramp        cell brightness picks a character from an ordered list.
+              Fast and simple. Needs an ordered charset -- see --help charset.
+
+  bitmask     compares the glyph's ink against the cell, pixel by pixel.
+              Solid all-rounder.
+
+  structure   matches edge direction and ink placement as two separate
+              things. Cleanest edges and the best surfaces. Default.
+
+
+SHARED BY EVERY ALGORITHM
+
+  --algo-allow-background                                        (off)
+      Solve a second colour per cell instead of drawing on one backdrop.
+      Much higher fidelity -- and it stops looking like text and starts
+      looking like coloured blocks. Try it with --charset blocks.
+
+  --algo-brightness-gamma F                                      (1.0)
+      Below 1 brightens the foreground. See --help grid for why output is
+      dimmer than the photo.
+
+  --algo-ramp-chars "STR"                             (" .:-=+*#%@")
+      The ordered list ramp steps through, light to dark.
+
+
+--algo bitmask
+
+  --algo-bitmask-softness F                                      (0.0)
+      Blend a blurred match into the sharp one so a stroke sitting a pixel
+      off still counts. Measured as unhelpful on real photos -- every value
+      above 0 scored worse. Left in as a dial, not a recommendation.
+
+  --algo-bitmask-blur-radius N                                     (1)
+      How far a stroke may drift, in cell pixels.
+
+
+--algo structure
+
+  --algo-structure-orientation-weight F                         (0.25)
+      How much edge DIRECTION counts. This is the real dial.
+      0    pure surface fidelity, softest
+      0.25 balanced
+      1.0  heavy outlines, and flat panels go mushy
+
+  --algo-structure-mass-weight F                                 (1.0)
+      How much WHERE THE INK SITS counts. This is what resolves shading.
+
+  --algo-structure-tone-weight F                                 (4.0)
+      Pull toward glyphs whose ink coverage matches the cell's brightness.
+      Both shape terms ignore how much ink there is, so without this you
+      get the right shapes at the wrong exposure.
+
+  --algo-structure-orient-blocks WxH                             (2x4)
+      Grid the cell is cut into before directions are counted. Coarse on
+      purpose: pooling is what makes direction robust.
+
+  --algo-structure-mass-blocks WxH                              (8x16)
+      Grid for the ink-placement term. One pixel per block by default.
+      Coarsening this is what makes T and -, or E and =, look alike to the
+      scorer -- which is exactly how surfaces turn to mush.
+
+  --algo-structure-bins N                                          (4)
+      How finely direction is split, over a half turn.

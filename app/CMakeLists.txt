@@ -25,3 +25,22 @@ if(MSVC)
 else()
     target_compile_options(asciigen_cli PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
 endif()
+
+# Installation. Nothing here runs during a build -- `cmake --install <builddir>`
+# is the only thing that triggers it, which is what makes installing explicit.
+#
+# Layout matches what Assets.cpp looks for at runtime:
+#     <prefix>/bin/asciigen.exe
+#     <prefix>/share/asciigen/help/*.txt
+#     <prefix>/share/asciigen/fonts/*.ttf
+#
+# The binary finds those relative to itself, so an installed copy keeps working
+# after the source tree moves or goes away.
+include(GNUInstallDirs)
+
+install(TARGETS asciigen_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+install(
+    DIRECTORY "${CMAKE_SOURCE_DIR}/assets/help" "${CMAKE_SOURCE_DIR}/assets/fonts"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/asciigen
+)

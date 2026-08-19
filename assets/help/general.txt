@@ -1,0 +1,44 @@
+asciigen -- turn a picture into characters
+
+USAGE
+  asciigen <image>                    print it to the terminal
+  asciigen <image> --out <file>       write a file instead
+  asciigen <file.ans|.txt>            print an existing text file back out
+  asciigen --help <topic>             details for one group of options
+
+  Printing to the terminal is what happens by default. Writing a file always
+  has to be asked for.
+
+COMMON
+  --preset NAME            a ready-made combination. --help presets
+  --out PATH               write here. Repeatable. Format from the extension
+  --algo NAME              ramp | bitmask | structure          (structure)
+  --charset NAME           ascii | blocks | ramp               (ascii)
+  --grid-width N           width in characters             (terminal width)
+  --color MODE             truecolor | ansi16 | none          (truecolor)
+  --image-width N          output picture width in pixels
+  --backdrop MODE          none | auto | #RRGGBB                   (none)
+
+HELP TOPICS
+  input        the file coming in, and text passthrough
+  source       adjustments to the photo, before glyphs are picked
+  font         which font, and how big glyphs are drawn
+  charset      which characters may be used
+  algo         choosing and tuning the algorithm
+  grid         grid size, and colour after glyphs are picked
+  dither       breaking up banding
+  edge         outlining
+  backdrop     the colour behind everything
+  output       files, formats, image size and alignment
+  presets      the ready-made combinations
+  sizing       how grid, glyph and image sizes fit together
+
+EXAMPLES
+  asciigen photo.jpg
+  asciigen photo.jpg --preset photo
+  asciigen photo.jpg --preset wallpaper --out wall.png
+  asciigen photo.jpg --algo bitmask --charset blocks --out art.png
+  asciigen photo.jpg --color none --grid-width 100 --out art.txt
+
+  Nothing is on by default beyond the algorithm itself, so a bare run shows you
+  what the selector alone produces. --preset photo is the tuned look.

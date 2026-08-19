@@ -1,0 +1,46 @@
+asciigen -- presets
+
+  --preset NAME
+
+A ready-made combination of flags. Anything you pass explicitly still wins,
+whether you write it before or after the --preset. Repeatable; later presets
+override earlier ones.
+
+
+  photo         the tuned look. What most photos want.
+                --algo structure --charset ascii
+                --source-auto-levels --source-sharpen 0.6
+                --grid-gamma 0.7 --grid-vibrance 0.4 --grid-despeckle 0.1
+                --backdrop auto
+
+  wallpaper     photo, sized for a desktop.
+                photo + --image-width 1920 --image-height 1080
+                        --image-fit contain --image-align center
+
+  terminal      photo, aimed at the screen.
+                photo + --color truecolor --stdout
+
+  lineart       outlines, no colour.
+                --algo ramp --charset ramp
+                --edge scharr --edge-threshold 0.2 --color none
+
+  blocks        highest fidelity, least like text.
+                --algo bitmask --algo-allow-background
+                --charset blocks --backdrop auto
+                (wants a font with Block Elements -- see --help charset)
+
+  plain         characters only, nothing clever.
+                --algo ramp --charset ramp --color none --no-grid-despeckle
+
+  gruvbox       photo, snapped to the gruvbox palette.
+                photo + --grid-palette gruvbox --backdrop #282828
+
+  nord          photo, snapped to the nord palette.
+                photo + --grid-palette nord --backdrop #2e3440
+
+
+EXAMPLES
+
+  asciigen photo.jpg --preset photo
+  asciigen photo.jpg --preset wallpaper --out wall.png
+  asciigen photo.jpg --preset photo --grid-vibrance 0      turn one part off

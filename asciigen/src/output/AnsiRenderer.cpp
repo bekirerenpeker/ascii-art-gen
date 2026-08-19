@@ -75,7 +75,10 @@ std::string render(const CellBuffer& buffer, const Charset& charset, AnsiRenderO
             appendUtf8(out, charset.codepointAt(cell.glyphIndex));
         }
 
-        out += ESC "[0m";
+        // Nothing was set, so there is nothing to reset -- and emitting one
+        // anyway leaves escape bytes in output that is meant to be plain text.
+        if (opts.depth != ColorDepth::None) out += ESC "[0m";
+
         out += '\n';
     }
 

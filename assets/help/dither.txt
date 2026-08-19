@@ -1,0 +1,40 @@
+asciigen -- dithering
+
+Nudges pixel values before the glyph is chosen, so a limited set of characters
+can suggest more tones than it really has. Off by default.
+
+  --dither NAME                                                 (none)
+      none | bayer4
+
+  --dither-levels N                                                (4)
+      How many tone steps the selector can resolve. This is the STRENGTH
+      knob, and it runs backwards: LOWER dithers harder.
+      4  strong     16  gentle     32  barely there
+
+  --dither-adaptive on|off                                        (on)
+      Back off where the picture already has detail.
+
+  --dither-flat-contrast F                                        (10)
+      Below this much local variation, dither at full strength.
+
+  --dither-edge-contrast F                                        (45)
+      Above this, do not dither at all. Raise it to let dithering reach
+      further into textured areas; lower it to protect more.
+
+
+LEAVE --dither-adaptive ON
+
+  Dithering exists to break up banding, and banding only happens in smooth
+  areas. Applied everywhere it shakes clean edges and fine detail apart.
+
+  Measured on a photo: with the gate off, 39% of detail cells were disturbed
+  and lines fragmented by 21%. With it on, 2% and 0% -- while flat areas
+  stayed exactly as dithered either way. You lose nothing by leaving it on.
+
+
+A NOTE ON DEEP BLACKS
+
+  A tone sitting hard against black has nowhere to be dithered towards --
+  half the nudge would invent brightness the photo never had, which is what
+  speckles a flat background. That is handled automatically and is not a
+  setting.

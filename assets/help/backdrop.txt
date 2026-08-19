@@ -1,0 +1,39 @@
+asciigen -- backdrop
+
+The colour behind everything. Filled into the grid AND used as the padding
+around the picture, so blanked cells and the border always match.
+
+  --backdrop MODE                                               (none)
+
+      none        black
+      auto        taken from the picture itself
+      #RRGGBB     exactly this colour
+
+  --backdrop-darken F                                            (0.15)
+      auto only. How far down from the picture's own colour.
+      0.1  very dark     0.15  default     0.3  light enough to notice
+
+  --backdrop-luma-threshold F                                      (40)
+      auto only. Cells dimmer than this do not count toward the average.
+
+
+HOW auto PICKS
+
+  It averages every cell bright enough to be SUBJECT rather than background,
+  then darkens the result. On a blue car you get a deep teal; on a sunset, a
+  dark amber.
+
+  The threshold is the part that matters. Averaging every cell would give you
+  near-black on any picture with a dark background, whatever the subject
+  looked like -- so the dark cells are deliberately left out.
+
+  It reads the colours AFTER --grid-gamma and --grid-vibrance have been
+  applied, so the backdrop follows what is actually drawn. Change those and
+  the backdrop shifts with them.
+
+
+WHY YOU WANT ONE
+
+  Cells that --grid-despeckle blanked still carry a background colour. Leave
+  that black against a non-black canvas and they punch visible holes in the
+  picture. Setting a backdrop fills them to match.

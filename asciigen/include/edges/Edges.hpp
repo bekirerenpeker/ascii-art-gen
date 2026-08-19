@@ -35,6 +35,10 @@ struct Options
 
 inline Options options;
 
-void apply(const Image& image, CellBuffer& buffer, const Charset& charset);
+// Adds the four directional glyphs to the charset if it lacks them, then stamps
+// them over cells that clear both gates. Returns true if the charset grew, in
+// which case any atlas used for RENDERING must be rebuilt from it -- the atlas
+// that drove selection does not, since selection is already finished.
+bool apply(const Image& image, CellBuffer& buffer, Charset& charset);
 
 };   // namespace Edges

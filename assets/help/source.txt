@@ -1,0 +1,41 @@
+asciigen -- source adjustments
+
+Applied to the photo BEFORE glyphs are chosen, so they change WHICH GLYPH gets
+picked. Use these to give the matcher a cleaner signal -- not to fix how the
+output looks. For that, see --help grid.
+
+Nothing here is on by default.
+
+  --source-auto-levels [LO,HI]                            (off; 0.5,99.5)
+      Stretch the tonal range so the darks reach black and the brights reach
+      white. LO and HI are percentiles, not absolute values -- one blown
+      highlight would otherwise pin the range and the stretch would do
+      nothing.
+
+      The best thing to reach for first. Biggest single improvement on a dull
+      photo, and it needs no tuning.
+
+  --source-levels B,W[,G]                                        (off)
+      The manual version. Black point, white point, and optionally gamma.
+
+  --source-contrast F                                            (1.0)
+      Pivots around mid-grey. Below 1 flattens.
+
+  --source-sharpen A[,R]                                         (off)
+      Unsharp mask: amount, and optionally radius. Helps --algo structure
+      in particular, since a harder edge gives its direction term more to
+      go on.
+
+  --source-blur R                                                (off)
+      Softens. Worth it on noisy photos, where grain competes with real
+      structure for the glyph choice.
+
+
+A CAVEAT ON RADII
+
+  --source-sharpen and --source-blur take a radius in SOURCE pixels, and they
+  run before the photo is resampled down to the grid. Radius 1 on a
+  1920px-wide photo is a strong effect; the same radius on a 6900px-wide one
+  is nearly invisible by the time it reaches a 160-cell grid.
+
+  Scale the radius with the photo, or expect to retune it per image.

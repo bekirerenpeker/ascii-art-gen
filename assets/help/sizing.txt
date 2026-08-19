@@ -1,0 +1,78 @@
+asciigen -- sizing
+
+Three different sizes, resolved in this order. They are easy to confuse.
+
+
+1. HOW MANY CELLS                                       --grid-width / -height
+
+  --grid-width N        width in characters
+  --grid-height N       height in characters
+
+  One given          the other follows from the source's shape
+  Both given         used exactly, shape ignored
+  Neither            terminal size when printing, otherwise 160 wide
+
+  Cells are twice as tall as they are wide, and that is accounted for, so a
+  square photo gives a grid about twice as wide as it is tall.
+
+
+2. HOW MANY PIXELS PER CELL                                 --font-render-size
+
+  --font-render-size N    glyph height in pixels for the output picture     (32)
+  --font-match-size N     glyph height used for matching                    (16)
+
+  Only a height is ever given. Width is always half of it.
+
+  Grid x glyph size = the picture's natural size.
+
+
+3. HOW BIG THE FILE IS                                             --image-*
+
+  --image-width N       output width in pixels
+  --image-height N      output height in pixels
+  --image-fit MODE      none | width | height | contain | cover | stretch
+  --image-align POS     top-left top top-right left center right
+                        bottom-left bottom bottom-right
+  --image-margin N      pixels kept clear on every side            (0)
+  --image-scale F       art size as a fraction of what is left   (1.0)
+
+  The art is fitted into a BOX INSIDE the picture, not into the whole picture.
+  margin insets the canvas by a fixed number of pixels; scale then takes a
+  fraction of what is left. Both leave backdrop around the art -- and that
+  empty space is what --image-align has to position within. At the default
+  scale 1.0 with fit contain the art fills one axis completely, so alignment
+  has nothing to do on that axis.
+
+  Use margin for "keep 200px clear", scale for "make it 60% the size".
+
+  Both work WITHOUT --image-width/--image-height. With no picture size given
+  the canvas is whatever the grid came out as, and the art is scaled inside
+  that.
+
+    --image-scale 0.6 --image-align top-left
+        art in the corner at 60%, the rest left clear for desktop icons
+
+
+THE RULE: IMAGE SIZE WINS
+
+  Ask for 1900x1200 and you get exactly 1900x1200. Everything upstream bends.
+
+  When --image-* is given and --font-render-size is not, the glyph size is
+  worked backwards from the target and clamped to 8..64 pixels. Without that
+  clamp you either render tiny and blow it up into mush, or render something
+  enormous and throw most of it away.
+
+  Then: render -> scale to fit -> place on the canvas, padded with the backdrop.
+
+  Set --font-render-size yourself and it is honoured exactly; the scale step
+  takes up the difference.
+
+
+FIT MODES
+
+  none        natural size, no scaling. Crops or pads to the canvas
+  width       scale until the width matches
+  height      scale until the height matches
+  contain     scale until it fits inside. Nothing is cut off        (default)
+  cover       scale until it fills. Edges get cropped
+  stretch     exactly the canvas, shape ignored

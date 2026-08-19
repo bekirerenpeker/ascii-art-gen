@@ -1,0 +1,43 @@
+asciigen -- edges
+
+Finds edges and stamps directional characters -- / | \ -- over the glyphs that
+were chosen. Off by default.
+
+  --edge NAME                                                   (none)
+      none | scharr
+
+  --edge-threshold F                                             (0.3)
+      How strong an edge has to be before anything is stamped. The
+      "how much edging" dial.
+      0.1  nearly everything     0.3  outlines     0.6  only the strongest
+
+  --edge-coherence F                                            (0.55)
+      How much the cell has to agree on a single direction. Rejects
+      texture, where the samples point every which way and no line
+      character would represent it.
+
+  --edge-subsamples N                                              (4)
+      Gradient samples per cell per axis.
+
+
+WHY IT IS OFF BY DEFAULT
+
+  bitmask and structure already match glyph shape across the whole charset.
+  Overwriting their choice with one of four characters throws detail away.
+
+  Direction alone cannot tell ` from _ -- both are horizontal, they just sit
+  at different heights in the cell. The base algorithms already know that;
+  the edge pass does not.
+
+  Turn it on for --algo ramp, for very small grids, or when you actually want
+  the outlined look.
+
+
+THE CHARSET DOES NOT NEED THESE CHARACTERS
+
+  If - / | or \ are missing they get appended to the set. Existing characters
+  keep their place, and it happens after selection, so the algorithm never had
+  them available to pick for a cell that is not an edge.
+
+  A blocks charset has none of the four and used to produce no edges at all.
+  It now produces all four directions.

@@ -1,0 +1,44 @@
+asciigen -- font
+
+  --font-path PATH                              (assets/fonts/SpaceMono-Regular)
+      The font glyphs are drawn from.
+
+  --font-match-size N                                             (16)
+      Glyph height in pixels used for MATCHING. Bigger tells glyphs apart
+      more finely and costs time. 16 is plenty for most work.
+
+  --font-render-size N                                       (32/auto)
+      Glyph height in pixels used for the OUTPUT PICTURE. Bigger means a
+      crisper PNG. With --image-height set it is worked out from that; with
+      no picture size at all it defaults to 32.
+
+      Do not go below about 24. A terminal draws readable text at 16px
+      because it HINTS the stems onto the pixel grid; this does not, so at
+      8x16 a letterform is a handful of grey blobs. 32 is the first size
+      that reads as crisp, and 48-64 is worth it for a large wallpaper.
+
+
+WIDTH IS ALWAYS HALF THE HEIGHT
+
+  Only a height is ever given. The cell is always 1:2, whatever font you
+  supply. A proportional face will therefore look wrong -- that is a
+  deliberate trade for never breaking the character grid.
+
+  Use a monospace font.
+
+
+TWO SIZES, TWO JOBS
+
+  The matching atlas only has to be big enough to tell one glyph from
+  another. The render atlas decides how sharp the picture looks, and wants to
+  be much bigger. Keeping them separate means matching stays fast while
+  output stays clean.
+
+
+MISSING CHARACTERS
+
+  A font that lacks a character in the charset draws it blank, with no
+  warning. This bites with --charset blocks: the bundled Space Mono has none
+  of the Block Elements.
+
+    --charset blocks --font-path C:/Windows/Fonts/CascadiaMono.ttf

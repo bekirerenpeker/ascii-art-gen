@@ -14,6 +14,11 @@ class Charset
     uint16_t size() const { return static_cast<uint16_t>(m_glyphs.size()); }
     int indexOf(char32_t codepoint) const;
 
+    // Returns the codepoint's index, adding it at the end if it was not present.
+    // Appending never disturbs an index already handed out, so a buffer built
+    // against the old set stays valid.
+    int append(char32_t codepoint);
+
     static const Charset& ascii();
     static const Charset& blocks();
 

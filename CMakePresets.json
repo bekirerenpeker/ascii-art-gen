@@ -28,7 +28,8 @@
       "displayName": "Release (clang + ninja)",
       "inherits": "base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INSTALL_PREFIX": "$env{LOCALAPPDATA}/Programs/asciigen"
       }
     }
   ],
@@ -46,6 +47,14 @@
       "configurePreset": "debug",
       "targets": [
         "run"
+      ]
+    },
+    {
+      "name": "install",
+      "displayName": "Build release and install to CMAKE_INSTALL_PREFIX",
+      "configurePreset": "release",
+      "targets": [
+        "install"
       ]
     }
   ]

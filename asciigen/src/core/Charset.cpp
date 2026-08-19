@@ -6,6 +6,15 @@ int Charset::indexOf(char32_t codepoint) const
     return pos == std::u32string::npos ? -1 : static_cast<int>(pos);
 }
 
+int Charset::append(char32_t codepoint)
+{
+    const int existing = indexOf(codepoint);
+    if (existing >= 0) return existing;
+
+    m_glyphs += codepoint;
+    return static_cast<int>(m_glyphs.size()) - 1;
+}
+
 const Charset& Charset::blocks()
 {
     // Space plus the whole Block Elements range (U+2580-U+259F): shading

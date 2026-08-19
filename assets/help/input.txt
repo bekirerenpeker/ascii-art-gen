@@ -1,0 +1,27 @@
+asciigen -- input
+
+  --input PATH
+      The picture to convert. Also accepted as a bare word, which is the
+      normal way to write it:
+
+        asciigen photo.jpg
+        asciigen --input photo.jpg      same thing
+
+  Paths are relative to wherever you ran the command, unless they are
+  absolute.
+
+  Formats: png jpg bmp tga gif psd hdr
+
+
+TEXT PASSTHROUGH
+
+  Give it a .ans or .txt file and nothing is converted -- the file is read and
+  printed with the terminal put into the right mode first.
+
+    asciigen art.ans
+
+  This exists because `cat` and `type` do not switch the console into VT mode,
+  so an .ans file printed with them comes out as literal escape sequences
+  instead of colour.
+
+  Every other flag is ignored in this mode.

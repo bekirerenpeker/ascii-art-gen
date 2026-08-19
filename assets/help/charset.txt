@@ -1,0 +1,47 @@
+asciigen -- character set
+
+Which characters the picture may be drawn with.
+
+  --charset NAME                                               (ascii)
+
+      ascii     printable ASCII, 0x20-0x7E. 95 glyphs
+      blocks    space plus the Block Elements, U+2580-U+259F. 33 glyphs
+      ramp      " .:-=+*#%@" -- ordered light to dark, for --algo ramp
+
+  --charset-chars "STR"
+      Use exactly these characters. Order matters only for --algo ramp.
+
+  --charset-range U+XXXX-U+YYYY
+      Add a codepoint range. Repeatable; ranges union together.
+      Plain hex works too: --charset-range 2580-259F
+
+
+READ DIFFERENTLY BY DIFFERENT ALGORITHMS
+
+  ramp                  an ORDERED brightness ramp. Position in the string
+                        means darkness, so the order is the whole point.
+
+  bitmask, structure    an UNORDERED bag of shapes. Order is irrelevant;
+                        more shapes means more to choose from.
+
+  So --charset ramp with --algo structure is legal but wasteful -- ten shapes
+  to pick from. And --charset ascii with --algo ramp is legal but produces
+  nonsense, because ASCII order has nothing to do with brightness.
+
+
+FONTS
+
+  blocks needs a font that actually contains the Block Elements. The bundled
+  Space Mono does not; Cascadia Mono does:
+
+    --charset blocks --font-path C:/Windows/Fonts/CascadiaMono.ttf
+
+  Characters the font lacks come out blank, silently.
+
+
+EDGES ADD THEIR OWN
+
+  --edge needs - / | and \. If the charset lacks any of them they are appended
+  to the end of the set, which leaves every existing index untouched. It
+  happens after selection, so the algorithm never had them available to pick
+  for a cell that is not an edge. Nothing to configure.

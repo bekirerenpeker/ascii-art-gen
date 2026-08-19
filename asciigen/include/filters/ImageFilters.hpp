@@ -24,8 +24,12 @@ void contrast(Image& image, float amount = 1.f);
 // before Structure runs: a harder edge gives its orientation term more to go on.
 void unsharpMask(Image& image, float amount = 0.6f, int radius = 1);
 
-// Separable box blur over a bare float plane rather than an Image, because its
-// callers are mid-pipeline: unsharpMask above, and Bitmask blurring glyph masks.
+// Softens the source. Useful before selection on noisy or over-detailed photos,
+// where the noise otherwise competes with real structure for the glyph choice.
+void blur(Image& image, int radius);
+
+// The same kernel over a bare float plane, for mid-pipeline callers that do not
+// have an Image: unsharpMask above, and Bitmask blurring its glyph masks.
 void blur(const float* src, float* dst, int w, int h, int radius);
 
 };   // namespace ImageFilters

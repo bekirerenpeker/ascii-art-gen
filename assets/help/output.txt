@@ -1,0 +1,62 @@
+asciigen -- output
+
+Printing to the terminal is the default. Writing a file always has to be asked
+for, and once you ask for one, printing stops unless you also pass --stdout.
+
+  --out PATH                                              (none; prints)
+      Write here. REPEATABLE -- every path given is produced from the one
+      conversion. Format comes from the extension.
+
+  --stdout / --no-stdout
+      Force printing on or off, whatever else was asked for.
+
+  --color MODE                                             (truecolor)
+      truecolor | ansi16 | none
+
+  --overwrite                                                    (off)
+      Allow replacing a file that already exists. Without it, an existing
+      path is refused.
+
+
+FORMATS
+
+  .png .jpg     the glyphs drawn back into a picture. Honours --image-*
+  .ans          text with colour escape codes. Displays in a terminal
+  .txt          characters only, no colour
+
+
+PICTURE SIZE
+
+  --image-width N        output width in pixels
+  --image-height N       output height in pixels
+  --image-fit MODE       none | width | height | contain | cover | stretch
+                                                            (contain)
+  --image-align POS      top-left top top-right left center right
+                         bottom-left bottom bottom-right      (center)
+  --image-margin N       pixels kept clear on every side           (0)
+  --image-scale F        art size as a fraction of what is left  (1.0)
+
+  margin, scale and align all work with no --image-width/--image-height:
+  the canvas is then whatever the grid came out as.
+
+  See --help sizing -- picture size, grid size and glyph size interact, and
+  picture size wins.
+
+
+EXAMPLES
+
+  asciigen photo.jpg --out art.png --out art.ans --out art.txt
+      all three from one conversion
+
+  asciigen photo.jpg --out art.png --stdout
+      write the file AND print it
+
+  asciigen photo.jpg --out wall.png --image-width 1920 --image-height 1080
+      exactly 1920x1080, scaled to fit, centred
+
+  asciigen photo.jpg --out art.txt --color none --grid-width 100
+      plain text, 100 characters wide
+
+  asciigen photo.jpg --out wall.png --image-width 1920 --image-height 1080
+                     --image-scale 0.6 --image-align top-left --backdrop auto
+      art in the top-left corner at 60%, the rest left clear for icons

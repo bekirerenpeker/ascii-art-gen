@@ -1,0 +1,60 @@
+asciigen -- the character grid
+
+Its size, and its colours. Everything here after the size runs AFTER glyphs are
+chosen, so it changes how the result is drawn, never what was drawn.
+
+
+SIZE
+
+  --grid-width N        width in characters                (terminal width)
+  --grid-height N       height in characters                 (from the shape)
+
+  See --help sizing for how this interacts with picture size.
+
+
+COLOUR
+
+  --grid-brightness F                                            (1.0)
+      Linear gain. Clips at the top.
+
+  --grid-gamma F                                                 (1.0)
+      Below 1 lifts without clipping. Usually what you want.
+
+  --grid-vibrance F                                              (0.0)
+      Saturation that boosts dull colours most and leaves already-vivid
+      ones nearly alone. Flat saturation drives strong colours into
+      clipping; it is the washed-out midtones that read as lifeless.
+
+  --grid-palette NAME                                           (none)
+      none | gruvbox | nord. Snaps colours to a fixed palette, matched by
+      how different they look rather than by raw distance.
+
+  --grid-palette-strength F                                      (1.0)
+      Below 1 tints toward the palette instead of quantising to it.
+
+
+CLEANUP
+
+  --grid-despeckle F                                             (0.1)
+  --no-grid-despeckle
+      Blank cells that are both too faint AND too close to their own
+      background to be worth drawing -- the scattered dark dots the
+      selector leaves behind. A cell has to fail on both counts to go:
+      heavy ink survives a dim colour, a bright colour survives a thin
+      glyph.
+
+      0.05  barely any     0.1  default     0.3  aggressive
+
+
+WHY THE OUTPUT IS DIMMER THAN THE PHOTO
+
+  About half as bright, and it is not a bug. A dark cell gets a sparse glyph
+  AND a dark colour, so brightness is applied twice -- the picture lands near
+  brightness squared.
+
+  Brightening the SOURCE does not fix it. The selector just answers with
+  denser glyphs and you end up in the same place. It has to be corrected
+  here, after selection.
+
+    --grid-gamma 0.7    recovers roughly a third of the gap
+    below 0.5           stops brightening, starts washing out
