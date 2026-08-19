@@ -28,11 +28,6 @@ struct BitmaskOptions
 
     // Blur radius in cell pixels, i.e. how far a stroke may drift and still match.
     int blurRadius = 1;
-
-    // What every cell sits on when allowBackground is false, so the glyph is the
-    // only thing carrying the picture. Ignored when the two-colour split is on,
-    // since that solves a paper colour per cell instead of being handed one.
-    RGB backgroundColor {0, 0, 0};
 };
 
 void generate(

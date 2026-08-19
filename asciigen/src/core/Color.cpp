@@ -47,6 +47,8 @@ void solveCellColor(
         fb = 255.f * std::pow(std::clamp(fb / 255.f, 0.f, 1.f), e);
     }
 
+    // Always black. Selection has no business choosing a backdrop -- that is a
+    // rendering decision, applied later with CellBuffer::fillBackground().
     outFg = {toByte(fr), toByte(fg), toByte(fb)};
-    outBg = opts.backgroundColor;
+    outBg = {0, 0, 0};
 }

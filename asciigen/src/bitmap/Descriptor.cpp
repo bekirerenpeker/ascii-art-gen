@@ -45,29 +45,37 @@ static float centreAndNormalize(std::vector<float>& v)
 
 void buildDescriptor(const float* cell, int w, int h, DescriptorShape shape, Descriptor& out)
 {
-    const int bx = std::max(1, shape.blocksX);
-    const int by = std::max(1, shape.blocksY);
+    const int bx = std::max(1, shape.orientBlocksX);
+    const int by = std::max(1, shape.orientBlocksY);
     const int bins = std::max(2, shape.bins);
 
+    const int mx = std::max(1, shape.massBlocksX);
+    const int my = std::max(1, shape.massBlocksY);
+
     out.orientation.assign((size_t)bx * by * bins, 0.f);
-    out.mass.assign((size_t)bx * by, 0.f);
+    out.mass.assign((size_t)mx * my, 0.f);
     out.orientationStrength = 0.f;
     out.massStrength = 0.f;
 
     if (!cell || w <= 0 || h <= 0) return;
 
-    std::vector<int> counts((size_t)bx * by, 0);
+    std::vector<int> counts((size_t)mx * my, 0);
 
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
-            // Which block a pixel lands in. Integer maths so a cell size that is
-            // not a multiple of the block count still partitions cleanly.
+            // Which block a pixel lands in, on each grid. Integer maths so a cell
+            // size that is not a multiple of the block count still partitions
+            // cleanly.
             const int cx = std::min(bx - 1, x * bx / w);
             const int cy = std::min(by - 1, y * by / h);
             const size_t block = (size_t)cx + (size_t)cy * bx;
 
-            out.mass[block] += cell[x + y * w];
-            counts[block]++;
+            const int gx_ = std::min(mx - 1, x * mx / w);
+            const int gy_ = std::min(my - 1, y * my / h);
+            const size_t massBlock = (size_t)gx_ + (size_t)gy_ * mx;
+
+            out.mass[massBlock] += cell[x + y * w];
+            counts[massBlock]++;
 
             const float gx = 3.f * (at(cell, w, h, x + 1, y + 1) - at(cell, w, h, x - 1, y + 1))
                            + 10.f * (at(cell, w, h, x + 1, y) - at(cell, w, h, x - 1, y))

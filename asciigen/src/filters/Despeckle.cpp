@@ -1,14 +1,14 @@
-#include "filters/Despeckle.hpp"
+#include "filters/CellFilters.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <vector>
 
-namespace Despeckle {
+namespace CellFilters {
 
 static float luma(const RGB& c) { return 0.299f * c.r + 0.587f * c.g + 0.114f * c.b; }
 
-void apply(CellBuffer& buffer, const GlyphAtlas& atlas, float strength)
+void despeckle(CellBuffer& buffer, const GlyphAtlas& atlas, float strength)
 {
     if (strength <= 0.f) return;
 
@@ -55,4 +55,4 @@ void apply(CellBuffer& buffer, const GlyphAtlas& atlas, float strength)
     }
 }
 
-}   // namespace Despeckle
+}   // namespace CellFilters

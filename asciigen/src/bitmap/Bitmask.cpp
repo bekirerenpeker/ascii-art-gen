@@ -1,7 +1,7 @@
 #include "bitmap/Bitmask.hpp"
 #include "bitmap/Resample.hpp"
 #include "dithering/Dithering.hpp"
-#include "filters/Blur.hpp"
+#include "filters/ImageFilters.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -61,7 +61,7 @@ void generate(
             for (int i = 0; i < cellPx; i++) sharp[i] = mask[i] / 255.f;
 
             float* dst = blurMask.data() + (size_t)g * (size_t)cellPx;
-            Blur::box(sharp.data(), dst, atlasW, atlasH, opts.blurRadius);
+            ImageFilters::blur(sharp.data(), dst, atlasW, atlasH, opts.blurRadius);
 
             float sum = 0.f, sumSq = 0.f;
             for (int i = 0; i < cellPx; i++) sum += dst[i], sumSq += dst[i] * dst[i];
@@ -108,7 +108,7 @@ void generate(
             // the correlation would be measuring detail at different scales.
             float blurMean = 0.f, blurStd = 0.f;
             if (soft) {
-                Blur::box(tileLuma.data(), blurLuma.data(), atlasW, atlasH, opts.blurRadius);
+                ImageFilters::blur(tileLuma.data(), blurLuma.data(), atlasW, atlasH, opts.blurRadius);
 
                 float sum = 0.f;
                 for (int i = 0; i < cellPx; i++) sum += blurLuma[i];
@@ -199,9 +199,7 @@ void generate(
 
             solveCellColor(
                 tile.data(), atlas.getGlyphBegin(bestGlyph), cellPx, inkWeight[bestGlyph],
-                {.allowBackground = opts.allowBackground,
-                 .brightnessGamma = opts.brightnessGamma,
-                 .backgroundColor = opts.backgroundColor},
+                {.allowBackground = opts.allowBackground, .brightnessGamma = opts.brightnessGamma},
                 cell.fg, cell.bg
             );
         }

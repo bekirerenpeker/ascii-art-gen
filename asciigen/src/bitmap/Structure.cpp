@@ -138,9 +138,7 @@ void generate(
 
             solveCellColor(
                 tile.data(), atlas.getGlyphBegin(glyph), cellPx, model.inkWeight[glyph],
-                {.allowBackground = opts.allowBackground,
-                 .brightnessGamma = opts.brightnessGamma,
-                 .backgroundColor = opts.backgroundColor},
+                {.allowBackground = opts.allowBackground, .brightnessGamma = opts.brightnessGamma},
                 cell.fg, cell.bg
             );
         }

@@ -10,18 +10,18 @@ namespace Structure {
 
 struct StructureOptions
 {
-    // How the cell is carved up before edge directions are counted. More blocks
-    // means the descriptor knows better WHERE a stroke is, but drifts back
-    // towards per-pixel matching; fewer means it only knows the cell's overall
-    // flow. bins is how finely direction itself is split, over a half turn.
-    DescriptorShape shape {.blocksX = 2, .blocksY = 4, .bins = 4};
+    // Block grids for the two shape terms; see DescriptorShape. Coarsening the
+    // mass grid trades surface detail away, which is what makes glyphs that only
+    // differ in fine structure -- T against -, E against = -- become
+    // interchangeable to the scorer.
+    DescriptorShape shape {};
 
-    // Which way the ink runs. This is the term that makes a glyph get picked for
-    // its shape rather than its weight.
-    float orientationWeight = 1.f;
+    // Which way the ink runs. This is the term that makes edges come out clean
+    // and directional rather than dissolving into tone.
+    float orientationWeight = 0.25f;
 
-    // Where the ink sits, block by block. Catches what orientation cannot: a
-    // shape with no strong direction, like a dot low in the cell.
+    // Where the ink sits. At one pixel per block this is plain per-pixel
+    // correlation, which is what resolves shading on flat surfaces.
     float massWeight = 1.f;
 
     // Pull towards glyphs whose ink coverage matches the tile's brightness. Both
@@ -32,7 +32,6 @@ struct StructureOptions
     // Passed straight through to solveCellColor once a glyph has been chosen.
     bool allowBackground = false;
     float brightnessGamma = 1.f;
-    RGB backgroundColor {0, 0, 0};
 };
 
 void generate(

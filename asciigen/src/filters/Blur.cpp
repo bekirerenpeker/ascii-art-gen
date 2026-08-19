@@ -1,10 +1,10 @@
-#include "filters/Blur.hpp"
+#include "filters/ImageFilters.hpp"
 #include <algorithm>
 #include <vector>
 
-namespace Blur {
+namespace ImageFilters {
 
-void box(const float* src, float* dst, int w, int h, int radius)
+void blur(const float* src, float* dst, int w, int h, int radius)
 {
     if (!src || !dst || w <= 0 || h <= 0) return;
 
@@ -36,4 +36,4 @@ void box(const float* src, float* dst, int w, int h, int radius)
     }
 }
 
-}   // namespace Blur
+}   // namespace ImageFilters

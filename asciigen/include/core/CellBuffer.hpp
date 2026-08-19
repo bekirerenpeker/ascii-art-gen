@@ -33,4 +33,21 @@ class CellBuffer
 
     Cell& getAt(int x, int y) { return m_cells[x + y * m_width]; }
     const Cell& getAt(int x, int y) const { return m_cells[x + y * m_width]; }
+
+    // A backdrop drawn from the picture's own colours: the mean foreground of
+    // every cell bright enough to be subject rather than background, taken down
+    // by `darken`. Dark cells are skipped deliberately -- averaging them in just
+    // pulls the answer towards black no matter what the subject looks like.
+    // Call it after the colour filters, since it reads whatever fg holds then.
+    RGB suggestedBackground(float darken = 0.15f, float lumaThreshold = 40.f) const;
+
+    void fillBackground(RGB color)
+    {
+        for (Cell& cell : m_cells) cell.bg = color;
+    }
+
+    void fillForeground(RGB color)
+    {
+        for (Cell& cell : m_cells) cell.fg = color;
+    }
 };

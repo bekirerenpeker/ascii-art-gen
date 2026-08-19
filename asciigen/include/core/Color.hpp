@@ -59,10 +59,6 @@ struct CellColorOptions
     // Exponent on the foreground. Coverage already tracks brightness, so a value
     // below 1 wins back some of that double-darkening; 1 disables it.
     float brightnessGamma = 1.f;
-
-    // What cells sit on when allowBackground is false. Ignored when it is true,
-    // since the paper colour is solved rather than supplied.
-    RGB backgroundColor {0, 0, 0};
 };
 
 // tile is cellPx RGB samples, mask the chosen glyph's coverage, inkWeight the sum

@@ -1,6 +1,6 @@
 #include "quality/Quality.hpp"
 #include "bitmap/Resample.hpp"
-#include "file_management/ImageManager.hpp"
+#include "output/ImageRenderer.hpp"
 #include "quality/Ssim.hpp"
 #include <cmath>
 
@@ -15,9 +15,9 @@ Report compare(const Image& source, const CellBuffer& buffer, const GlyphAtlas& 
 {
     Report report;
 
-    // Same compositing the PNG export uses, so the score is measured against
-    // exactly the picture the user can look at rather than a second copy of it.
-    const Image rendered = ImageManager::bufferToImage(buffer, atlas);
+    // Same compositing the PNG export uses, at its natural size: the comparison
+    // has to line up with the resampled source, so no padding or centring here.
+    const Image rendered = ImageRenderer::render(buffer, atlas);
     if (!rendered.pixels || !source.pixels) return report;
 
     // Deliberately the undithered plane. Dither is a means, not the target, so
