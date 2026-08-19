@@ -1,4 +1,5 @@
 #include "bitmap/Bitmask.hpp"
+#include "bitmap/Structure.hpp"
 #include "bitmap/Ramp.hpp"
 #include "core/CellBuffer.hpp"
 #include "core/Charset.hpp"
@@ -45,9 +46,19 @@ int main(int argc, char* argv[])
     GlyphAtlas matchAtlas(font, charset, 8, 16);
     GlyphAtlas renderAtlas(font, charset, 16, 32);
 
-    Bitmask::generate(
-        img, buffer, matchAtlas, {.allowBackground = false, .softness = 0.f, .blurRadius = 1}
+    Structure::generate(
+        img, buffer, matchAtlas,
+        {
+            .shape = {.blocksX = 2, .blocksY = 4, .bins = 4},
+            .orientationWeight = 1.f,
+            .massWeight = 1.f,
+            .toneWeight = 4.f,
+            .allowBackground = false,
+    }
     );
+    /*
+    Bitmask::generate(img, buffer, matchAtlas);
+    */
 
     Edges::apply(img, buffer, charset);
 

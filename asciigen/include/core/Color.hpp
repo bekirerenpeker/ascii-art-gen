@@ -47,6 +47,31 @@ struct RGB
     GlyphColor toGlyphColor() const;
 };
 
+// How a cell's two colours are decided once a glyph has been chosen. Shared by
+// every selector: which glyph fits is the algorithm's problem, what colour to
+// draw it in is not.
+struct CellColorOptions
+{
+    // Solve a paper colour per cell instead of drawing over a fixed backdrop.
+    // Better on flat art, washes photos out towards coloured blocks.
+    bool allowBackground = false;
+
+    // Exponent on the foreground. Coverage already tracks brightness, so a value
+    // below 1 wins back some of that double-darkening; 1 disables it.
+    float brightnessGamma = 1.f;
+
+    // What cells sit on when allowBackground is false. Ignored when it is true,
+    // since the paper colour is solved rather than supplied.
+    RGB backgroundColor {0, 0, 0};
+};
+
+// tile is cellPx RGB samples, mask the chosen glyph's coverage, inkWeight the sum
+// of that mask over the cell (mask/255 summed, not a pixel count).
+void solveCellColor(
+    const RGB* tile, const uint8_t* mask, int cellPx, float inkWeight, CellColorOptions opts,
+    RGB& outFg, RGB& outBg
+);
+
 // Nearest of the 16 ANSI colors, for terminals without truecolor support.
 // Default is never returned -- it has no RGB value to match against.
 inline GlyphColor RGB::toGlyphColor() const

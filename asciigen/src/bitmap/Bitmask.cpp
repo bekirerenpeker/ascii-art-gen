@@ -11,8 +11,6 @@ namespace Bitmask {
 
 static float luma(const RGB& c) { return 0.299f * c.r + 0.587f * c.g + 0.114f * c.b; }
 
-static uint8_t toByte(float v) { return (uint8_t)std::round(std::clamp(v, 0.f, 255.f)); }
-
 void generate(
     const Image& image, CellBuffer& outBuffer, const GlyphAtlas& atlas, BitmaskOptions opts
 )
@@ -86,7 +84,7 @@ void generate(
 
     for (int cy = 0; cy < outBuffer.height(); cy++) {
         for (int cx = 0; cx < outBuffer.width(); cx++) {
-            float sumR = 0, sumG = 0, sumB = 0, sumL = 0;
+            float sumL = 0;
             for (int py = 0; py < atlasH; py++) {
                 for (int px = 0; px < atlasW; px++) {
                     const PixelColor p = plane.getAt(cx * atlasW + px, cy * atlasH + py);
@@ -94,7 +92,6 @@ void generate(
                     const int i = px + py * atlasW;
                     tile[i] = c;
                     tileLuma[i] = luma(c);
-                    sumR += c.r, sumG += c.g, sumB += c.b;
                     sumL += tileLuma[i];
                 }
             }
@@ -197,44 +194,16 @@ void generate(
                 bestGlyph = g;
             }
 
-            const uint8_t* mask = atlas.getGlyphBegin(bestGlyph);
-            const float w = inkWeight[bestGlyph];
-
-            float inkR = 0, inkG = 0, inkB = 0;
-            for (int i = 0; i < cellPx; i++) {
-                const float a = mask[i] / 255.f;
-                inkR += tile[i].r * a, inkG += tile[i].g * a, inkB += tile[i].b * a;
-            }
-
             Cell& cell = outBuffer.getAt(cx, cy);
             cell.glyphIndex = (uint16_t)bestGlyph;
 
-            if (opts.allowBackground) {
-                const float m = cellPx - w;
-                cell.bg = m > 0.f ? RGB {toByte((sumR - inkR) / m), toByte((sumG - inkG) / m),
-                                         toByte((sumB - inkB) / m)}
-                                  : RGB {0, 0, 0};
-                cell.fg = w > 0.f ? RGB {toByte(inkR / w), toByte(inkG / w), toByte(inkB / w)}
-                                  : cell.bg;
-            } else {
-                float fr, fg_, fb;
-                if (w > 0.f) fr = inkR / w, fg_ = inkG / w, fb = inkB / w;
-                else fr = sumR / cellPx, fg_ = sumG / cellPx, fb = sumB / cellPx;
-
-                // Coverage already tracks brightness, so rendering it in a colour
-                // that also tracks brightness darkens the cell twice over. A gamma
-                // below 1 wins some back; unlike a coverage-derived multiplier it
-                // is bounded and can never blow past white.
-                if (opts.brightnessGamma != 1.f) {
-                    const float e = opts.brightnessGamma;
-                    fr = 255.f * std::pow(std::clamp(fr / 255.f, 0.f, 1.f), e);
-                    fg_ = 255.f * std::pow(std::clamp(fg_ / 255.f, 0.f, 1.f), e);
-                    fb = 255.f * std::pow(std::clamp(fb / 255.f, 0.f, 1.f), e);
-                }
-
-                cell.fg = {toByte(fr), toByte(fg_), toByte(fb)};
-                cell.bg = opts.backgroundColor;
-            }
+            solveCellColor(
+                tile.data(), atlas.getGlyphBegin(bestGlyph), cellPx, inkWeight[bestGlyph],
+                {.allowBackground = opts.allowBackground,
+                 .brightnessGamma = opts.brightnessGamma,
+                 .backgroundColor = opts.backgroundColor},
+                cell.fg, cell.bg
+            );
         }
     }
 }
