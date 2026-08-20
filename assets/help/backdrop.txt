@@ -15,6 +15,10 @@ around the picture, so blanked cells and the border always match.
 
   --backdrop-luma-threshold F                                      (40)
       auto only. Cells dimmer than this do not count toward the average.
+      A 0-255 brightness, so 40 is "darker than about 15% grey".
+      15  counts almost everything, backdrops come out near-black
+      40  default
+      90  only genuinely bright cells; strong, saturated backdrops
 
 
 HOW auto PICKS

@@ -16,8 +16,17 @@ were chosen. Off by default.
       texture, where the samples point every which way and no line
       character would represent it.
 
+      It is the fraction of the cell's edge strength pointing the same way,
+      so it runs 0 to 1 and the numbers are readable: random texture lands
+      near 0.3, a clean straight line near 0.9.
+
+      0.4   lets textured cells through     0.55  default
+      0.75  only unmistakable lines         above 0.9  almost nothing
+
   --edge-subsamples N                                              (4)
-      Gradient samples per cell per axis.
+      Gradient samples per cell per axis, so 4 means 16 samples per cell.
+      Cost grows with the square -- 8 is four times the work of 4.
+      2  coarse and cheap     4  default     8  finer, rarely worth it
 
 
 WHY IT IS OFF BY DEFAULT

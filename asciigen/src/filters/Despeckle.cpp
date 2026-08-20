@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "filters/CellFilters.hpp"
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,8 @@ void despeckle(CellBuffer& buffer, const GlyphAtlas& atlas, float strength)
     const int cellPx = atlas.glpyhSize();
     const int glyphCount = atlas.glyphCount();
     if (cellPx <= 0 || glyphCount <= 0 || buffer.width() <= 0 || buffer.height() <= 0) return;
+    ASCIIGEN_PROFILE("despeckle", "filter");
+
 
     // Mean ink per glyph, and the emptiest glyph in the set -- that is what a
     // cleared cell becomes. Picked by coverage rather than by looking up a space

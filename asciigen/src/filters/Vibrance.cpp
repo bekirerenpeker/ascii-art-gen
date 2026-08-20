@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "filters/CellFilters.hpp"
 #include <algorithm>
 #include <cmath>
@@ -25,6 +26,8 @@ static RGB boost(RGB c, float amount)
 void vibrance(CellBuffer& buffer, float amount)
 {
     if (amount == 0.f) return;
+    ASCIIGEN_PROFILE("vibrance", "filter");
+
 
     for (int y = 0; y < buffer.height(); y++) {
         for (int x = 0; x < buffer.width(); x++) {

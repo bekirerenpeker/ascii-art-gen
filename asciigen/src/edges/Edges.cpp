@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "edges/Edges.hpp"
 #include "edges/EdgeField.hpp"
 #include "edges/Scharr.hpp"
@@ -9,6 +10,8 @@ bool apply(const Image& image, CellBuffer& buffer, Charset& charset)
 {
     if (!options.enabled) return false;
     if (!image.pixels || buffer.width() <= 0 || buffer.height() <= 0) return false;
+    ASCIIGEN_PROFILE("Edges::apply", "edges");
+
 
     // Bucket order matches the angle sweep in the detector: 0, 45, 90, 135 degrees.
     static const char32_t kLineGlyphs[4] = {U'-', U'/', U'|', U'\\'};

@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "font/GlyphAtlas.hpp"
 #include "core/Image.hpp"
 #include "file_management/ImageManager.hpp"
@@ -7,6 +8,8 @@ GlyphAtlas::GlyphAtlas(const Font& font, const Charset& charset, int cellW, int 
     : m_glyphCount(charset.size()), m_cellW(cellW), m_cellH(cellH)
 {
     m_glyphPixels = new uint8_t[cellW * cellH * charset.size()];
+    ASCIIGEN_PROFILE("GlyphAtlas::build", "font");
+
 
     uint8_t* begin = m_glyphPixels;
     for (int i = 0; i < charset.size(); i++) {

@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "dithering/Dithering.hpp"
 #include "dithering/Bayer4.hpp"
 #include "dithering/BlockContrast.hpp"
@@ -8,6 +9,8 @@ namespace Dithering {
 void apply(Image& plane, int blockW, int blockH)
 {
     if (!options.enabled) return;
+    ASCIIGEN_PROFILE("Dithering::apply", "dither");
+
 
     // Computed here rather than per algorithm: where dither helps is a property
     // of the picture, not of the pattern used. An empty field reads back as 1

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Color.hpp"
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,6 +70,19 @@ enum class ImageFit
     Contain,
     Cover,
     Stretch,
+};
+
+// How much effort the OUTPUT is worth. Only ever touches render resolution and
+// encoding effort -- never which glyph gets picked, never the colours. Meant for
+// iterating fast and then committing to a final render, so it deliberately also
+// drops the grid size: a preview at full grid but tiny glyphs still costs the
+// full selection pass, which is the expensive half.
+enum class RenderDetail
+{
+    None,
+    Test,
+    Mid,
+    High,
 };
 
 enum class ImageAlign
@@ -229,6 +243,10 @@ struct OutputOptions
     // Width over height. Only grows the final picture; never crops it and never
     // resamples the art. 0 leaves its shape alone.
     float imageAspect = 0.f;
+
+    // 0 fastest and largest, 9 slowest and smallest. stb's default is 8, which
+    // makes PNG encoding the single most expensive stage of a normal run.
+    int pngCompression = 8;
 };
 
 struct Options
@@ -245,6 +263,11 @@ struct Options
     OutputOptions output;
 
     std::vector<std::string> presets;
+    RenderDetail renderDetail = RenderDetail::None;
+
+    // Where to write the Chrome-trace JSON. Empty means profiling stays off, so
+    // the flag's presence is the whole switch.
+    std::string profilePath;
 
     bool helpRequested = false;
     std::string helpTopic;

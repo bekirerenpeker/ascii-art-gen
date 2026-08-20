@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "filters/ImageFilters.hpp"
 #include <algorithm>
 #include <cmath>
@@ -40,34 +41,33 @@ void blur(const float* src, float* dst, int w, int h, int radius)
 void blur(Image& image, int radius)
 {
     if (!image.pixels || radius < 1 || image.width <= 0 || image.height <= 0) return;
+    ASCIIGEN_PROFILE("blur(Image)", "filter");
+
 
     const size_t n = (size_t)image.width * (size_t)image.height;
     std::vector<float> ch(n), soft(n);
 
+    // Hoisted out of the loops on purpose: byte writes may alias anything, so
+    // going through getAt/setAt would reload width/height/depth after every
+    // pixel and leave the gather and scatter costing more than the blur.
+    const int d = image.depth;
+    byte* const px = image.pixels;
+
+    // Grey buffers hold one value that setAt would recompute from all three
+    // channels, so blurring channel 0 alone is the whole job.
+    const int channels = d >= 3 ? 3 : 1;
+
     // One channel at a time: the kernel is separable and scalar, so there is
     // nothing to gain from interleaving, and this keeps the temporaries small.
-    for (int c = 0; c < 3; c++) {
-        for (int y = 0; y < image.height; y++) {
-            for (int x = 0; x < image.width; x++) {
-                const PixelColor p = image.getAt(x, y);
-                ch[(size_t)x + (size_t)y * image.width] = c == 0 ? p.r : (c == 1 ? p.g : p.b);
-            }
-        }
+    for (int c = 0; c < channels; c++) {
+        const byte* src = px + c;
+        for (size_t i = 0; i < n; i++, src += d) ch[i] = *src;
 
         blur(ch.data(), soft.data(), image.width, image.height, radius);
 
-        for (int y = 0; y < image.height; y++) {
-            for (int x = 0; x < image.width; x++) {
-                PixelColor p = image.getAt(x, y);
-                const byte v = (byte)std::clamp(std::lround(soft[(size_t)x + (size_t)y * image.width]), 0L, 255L);
-
-                if (c == 0) p.r = v;
-                else if (c == 1) p.g = v;
-                else p.b = v;
-
-                image.setAt(x, y, p);
-            }
-        }
+        byte* dst = px + c;
+        for (size_t i = 0; i < n; i++, dst += d)
+            *dst = (byte)std::clamp(std::lround(soft[i]), 0L, 255L);
     }
 }
 

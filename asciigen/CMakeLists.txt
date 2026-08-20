@@ -20,6 +20,14 @@ target_link_libraries(asciigen PUBLIC stb)
 # its include directories automatically -- no separate include path to add.
 target_link_libraries(asciigen PUBLIC freetype)
 
+# Compiles every ASCIIGEN_PROFILE scope out when OFF, so a build without it
+# carries no timing code at all. PUBLIC because app/ uses the same macros and
+# both sides must agree, or a scope opened in one would not close in the other.
+option(ASCIIGEN_PROFILING "Compile in the profiler" ON)
+if(ASCIIGEN_PROFILING)
+    target_compile_definitions(asciigen PUBLIC ASCIIGEN_PROFILING)
+endif()
+
 if(MSVC)
     target_compile_options(asciigen PRIVATE /W4 /permissive-)
 else()

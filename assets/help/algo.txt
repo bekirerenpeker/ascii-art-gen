@@ -23,6 +23,7 @@ SHARED BY EVERY ALGORITHM
   --algo-brightness-gamma F                                      (1.0)
       Below 1 brightens the foreground. See --help grid for why output is
       dimmer than the photo.
+      0.7  strong lift     0.85  gentle     1.0  off
 
   --algo-ramp-chars "STR"                             (" .:-=+*#%@")
       The ordered list ramp steps through, light to dark.
@@ -36,7 +37,10 @@ SHARED BY EVERY ALGORITHM
       above 0 scored worse. Left in as a dial, not a recommendation.
 
   --algo-bitmask-blur-radius N                                     (1)
-      How far a stroke may drift, in cell pixels.
+      How far a stroke may drift, in cell pixels. A cell is 8x16 at the
+      default --font-match-size, so 2 is already a quarter of its width.
+      Only does anything when --algo-bitmask-softness is above 0.
+      1  default     2  loose     3+  shapes stop mattering
 
 
 --algo structure
@@ -49,11 +53,18 @@ SHARED BY EVERY ALGORITHM
 
   --algo-structure-mass-weight F                                 (1.0)
       How much WHERE THE INK SITS counts. This is what resolves shading.
+      Read it against orientation-weight -- only the ratio matters.
+      0.5  direction leads     1.0  balanced     2.0  placement leads
 
   --algo-structure-tone-weight F                                 (4.0)
       Pull toward glyphs whose ink coverage matches the cell's brightness.
       Both shape terms ignore how much ink there is, so without this you
       get the right shapes at the wrong exposure.
+
+      Deliberately the largest of the three: getting brightness wrong is
+      more obvious than getting a shape slightly wrong.
+      1   shape wins, exposure drifts     4  default
+      8   near enough a brightness ramp with shapes as a tie-break
 
   --algo-structure-orient-blocks WxH                             (2x4)
       Grid the cell is cut into before directions are counted. Coarse on
@@ -65,4 +76,7 @@ SHARED BY EVERY ALGORITHM
       scorer -- which is exactly how surfaces turn to mush.
 
   --algo-structure-bins N                                          (4)
-      How finely direction is split, over a half turn.
+      How finely direction is split, over a half turn. 4 bins is 45 degrees
+      each, which is exactly what / | \ and - can express -- so finer
+      binning describes angles no glyph can actually draw.
+      4  default     8  finer, and slower for little gain

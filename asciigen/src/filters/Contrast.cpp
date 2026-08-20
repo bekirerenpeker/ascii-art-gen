@@ -13,12 +13,19 @@ void contrast(Image& image, float amount)
     for (int i = 0; i < 256; i++)
         lut[i] = (uint8_t)std::clamp(std::lround(((float)i - 128.f) * amount + 128.f), 0L, 255L);
 
-    for (int y = 0; y < image.height; y++) {
-        for (int x = 0; x < image.width; x++) {
-            PixelColor c = image.getAt(x, y);
-            c.r = lut[c.r], c.g = lut[c.g], c.b = lut[c.b];
-            image.setAt(x, y, c);
+    // See Levels.cpp: the accessors reload the struct after every byte written,
+    // so the loop walks a raw pointer instead.
+    const int d = image.depth;
+    const size_t n = (size_t)image.width * (size_t)image.height;
+    byte* p = image.pixels;
+
+    if (d >= 3) {
+        for (size_t i = 0; i < n; i++, p += d) {
+            p[0] = lut[p[0]], p[1] = lut[p[1]], p[2] = lut[p[2]];
         }
+    }
+    else {
+        for (size_t i = 0; i < n; i++, p += d) p[0] = lut[p[0]];
     }
 }
 

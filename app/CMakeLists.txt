@@ -16,6 +16,10 @@ target_link_libraries(asciigen_cli PRIVATE asciigen)
 # the correct behaviour.
 target_compile_definitions(asciigen_cli PRIVATE SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
+# Stamped into every trace, so a Debug timing is never mistaken for a Release one.
+target_compile_definitions(asciigen_cli PRIVATE
+    ASCIIGEN_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
 # Default font candidates, per OS, tried in order at runtime -- the first that
 # exists wins. Detected here rather than guessed at runtime, and kept as a list
 # rather than one path because distributions disagree about where fonts live.

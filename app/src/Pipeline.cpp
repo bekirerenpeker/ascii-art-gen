@@ -1,5 +1,7 @@
 #include "Pipeline.hpp"
+#include "core/Profiler.hpp"
 #include "Assets.hpp"
+#include "bitmap/Resample.hpp"
 #include "bitmap/Bitmask.hpp"
 #include "bitmap/Ramp.hpp"
 #include "bitmap/Structure.hpp"
@@ -21,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <set>
 
 using namespace App;
@@ -203,24 +206,23 @@ int run(const Options& opts)
 {
     if (opts.input.passthrough) return passthrough(opts);
 
-    Image img = ImageManager::loadImage(opts.input.path);
-    if (!img.pixels) return 3;
+    ASCIIGEN_PROFILE("run", "pipeline");
 
-    // Before selection, so they change which glyph gets chosen rather than how
-    // the result is drawn.
-    if (opts.source.autoLevels)
-        ImageFilters::autoLevels(img, opts.source.autoLevelsLow, opts.source.autoLevelsHigh);
-    if (opts.source.levels)
-        ImageFilters::levels(img, opts.source.levelsBlack, opts.source.levelsWhite, opts.source.levelsGamma);
-    if (opts.source.contrast != 1.f) ImageFilters::contrast(img, opts.source.contrast);
-    if (opts.source.blurRadius > 0) ImageFilters::blur(img, opts.source.blurRadius);
-    if (opts.source.sharpenAmount > 0.f)
-        ImageFilters::unsharpMask(img, opts.source.sharpenAmount, opts.source.sharpenRadius);
+    Image img;
+    {
+        ASCIIGEN_PROFILE("load", "io");
+        img = ImageManager::loadImage(opts.input.path);
+    }
+    if (!img.pixels) return 3;
 
     int cols = 0, rows = 0;
     resolveGridSize(opts, img, cols, rows);
 
-    Charset charset = buildCharset(opts);
+    Charset charset;
+    {
+        ASCIIGEN_PROFILE("buildCharset", "font");
+        charset = buildCharset(opts);
+    }
 
     CellBuffer buffer;
     buffer.setSize(cols, rows);
@@ -248,7 +250,13 @@ int run(const Options& opts)
         return 7;
     }
 
-    Font font(fontPath);
+    std::unique_ptr<Font> fontHolder;
+    {
+        ASCIIGEN_PROFILE("Font::load", "font");
+        fontHolder = std::make_unique<Font>(fontPath);
+    }
+    Font& font = *fontHolder;
+
 
     // Width is half the height, always, so the cell grid can never be broken by
     // the choice of face.
@@ -258,12 +266,53 @@ int run(const Options& opts)
     // Fewer than two distinct shapes means there is nothing to choose between,
     // and the result is a uniform picture. Worth saying out loud -- the usual
     // cause is a charset the font simply does not cover.
-    if (distinctGlyphCount(matchAtlas) < 2) {
+    int distinct = 0;
+    {
+        ASCIIGEN_PROFILE("distinctGlyphCount", "font");
+        distinct = distinctGlyphCount(matchAtlas);
+    }
+
+    if (distinct < 2) {
         std::cerr << "asciigen: \"" << fontPath.filename().string()
                   << "\" has no glyphs for this charset, so the output will be blank.\n"
                   << "  pick a font that covers it, e.g.\n"
                   << "  --font-path C:/Windows/Fonts/CascadiaMono.ttf\n";
     }
+
+    // Resampled BEFORE the filters, not after. Only cell-resolution detail
+    // survives into the selector, so filtering the full-size source spends most
+    // of its work on pixels about to be averaged away -- and sharpening in
+    // particular is largely undone by that averaging. Doing it here is both far
+    // cheaper and more effective, because the detail it enhances is the detail
+    // the selector actually sees.
+    //
+    // Ramp reads one sample per cell; everything else works at atlas resolution.
+    const int planeW = opts.algo.name == AlgoName::Ramp ? cols : cols * std::max(1, matchH / 2);
+    const int planeH = opts.algo.name == AlgoName::Ramp ? rows : rows * matchH;
+
+    {
+        ASCIIGEN_PROFILE("resample for filters", "resample");
+
+        Image plane;
+        Resample::toGrid(img, plane, planeW, planeH);
+        img = std::move(plane);
+    }
+
+    {
+        ASCIIGEN_PROFILE("source filters", "filter");
+
+        if (opts.source.autoLevels)
+            ImageFilters::autoLevels(img, opts.source.autoLevelsLow, opts.source.autoLevelsHigh);
+        if (opts.source.levels)
+            ImageFilters::levels(
+                img, opts.source.levelsBlack, opts.source.levelsWhite, opts.source.levelsGamma
+            );
+        if (opts.source.contrast != 1.f) ImageFilters::contrast(img, opts.source.contrast);
+        if (opts.source.blurRadius > 0) ImageFilters::blur(img, opts.source.blurRadius);
+        if (opts.source.sharpenAmount > 0.f)
+            ImageFilters::unsharpMask(img, opts.source.sharpenAmount, opts.source.sharpenRadius);
+    }
+
 
     switch (opts.algo.name) {
     case AlgoName::Ramp:
@@ -299,18 +348,26 @@ int run(const Options& opts)
 
     // May append the directional glyphs, so anything rasterised from the charset
     // has to come after this.
-    Edges::apply(img, buffer, charset);
+    {
+        ASCIIGEN_PROFILE("edges", "edges");
+        Edges::apply(img, buffer, charset);
+    }
 
-    if (opts.grid.despeckle > 0.f) CellFilters::despeckle(buffer, matchAtlas, opts.grid.despeckle);
+    {
+        ASCIIGEN_PROFILE("cell filters", "filter");
 
-    if (opts.grid.brightness != 1.f || opts.grid.gamma != 1.f)
-        CellFilters::brightness(buffer, opts.grid.brightness, opts.grid.gamma);
-    if (opts.grid.vibrance != 0.f) CellFilters::vibrance(buffer, opts.grid.vibrance);
+        if (opts.grid.despeckle > 0.f)
+            CellFilters::despeckle(buffer, matchAtlas, opts.grid.despeckle);
 
-    if (opts.grid.palette == PaletteName::Gruvbox)
-        CellFilters::paletteMap(buffer, Palettes::gruvbox(), opts.grid.paletteStrength);
-    else if (opts.grid.palette == PaletteName::Nord)
-        CellFilters::paletteMap(buffer, Palettes::nord(), opts.grid.paletteStrength);
+        if (opts.grid.brightness != 1.f || opts.grid.gamma != 1.f)
+            CellFilters::brightness(buffer, opts.grid.brightness, opts.grid.gamma);
+        if (opts.grid.vibrance != 0.f) CellFilters::vibrance(buffer, opts.grid.vibrance);
+
+        if (opts.grid.palette == PaletteName::Gruvbox)
+            CellFilters::paletteMap(buffer, Palettes::gruvbox(), opts.grid.paletteStrength);
+        else if (opts.grid.palette == PaletteName::Nord)
+            CellFilters::paletteMap(buffer, Palettes::nord(), opts.grid.paletteStrength);
+    }
 
     // Last, so the colour filters cannot shift the chosen backdrop, and so cells
     // blanked by despeckle carry it too rather than punching black holes.
@@ -337,6 +394,8 @@ int run(const Options& opts)
     }
 
     if (opts.output.paths.empty()) return 0;
+
+    ImageManager::setPngCompression(opts.output.pngCompression);
 
     GlyphAtlas renderAtlas;
     if (wantsImage(opts)) {

@@ -247,6 +247,39 @@ Result parse(int argc, char* argv[], Options& out)
         }
     }
 
+    // Second half of the same pre-pass: render detail lands after presets so it
+    // can override the render size a preset chose, and before the main loop so
+    // an explicit --font-render-size or --grid-width still wins over both.
+    {
+        Reader r(tokens);
+        for (; !r.done(); r.advance()) {
+            if (r.current().name != "render-detail") continue;
+
+            const std::string v = r.value("render-detail");
+            if (r.failed()) return Result::ExitFailure;
+
+            // Grid size is deliberately NOT touched. How many cells there are
+            // decides which glyphs get chosen and what the picture looks like --
+            // that is a styling decision, not a detail level. Changing it here
+            // would mean a preview showed different art from the final render,
+            // which defeats the point of previewing.
+            if (v == "test") {
+                out.font.renderSize = 16;
+                out.output.pngCompression = 1;
+            } else if (v == "mid") {
+                out.font.renderSize = 32;
+                out.output.pngCompression = 4;
+            } else if (v == "high") {
+                out.font.renderSize = 64;
+                out.output.pngCompression = 9;
+            } else {
+                std::cerr << "asciigen: unknown --render-detail \"" << v
+                          << "\" (test, mid, high)\n";
+                return Result::ExitFailure;
+            }
+        }
+    }
+
     Reader r(tokens);
 
     for (; !r.done(); r.advance()) {
@@ -277,6 +310,7 @@ Result parse(int argc, char* argv[], Options& out)
             }
             continue;
         }
+        if (n == "profile") { out.profilePath = r.value(n); continue; }
         if (n == "version") {
             out.showVersion = true;
             continue;
@@ -473,6 +507,15 @@ Result parse(int argc, char* argv[], Options& out)
             const std::string v = r.value(n);
             if (!parseAspect(v, out.output.imageAspect))
                 r.fail("bad --image-aspect \"" + v + "\" (want 16:9 or 1.778)");
+            continue;
+        }
+        if (n == "png-compression") { out.output.pngCompression = r.intValue(n); continue; }
+        if (n == "render-detail") {
+            const std::string v = r.value(n);
+            if (v == "test") out.renderDetail = RenderDetail::Test;
+            else if (v == "mid") out.renderDetail = RenderDetail::Mid;
+            else if (v == "high") out.renderDetail = RenderDetail::High;
+            else r.fail("unknown --render-detail \"" + v + "\" (test, mid, high)");
             continue;
         }
         if (n == "image-margin") { out.output.imageMargin = r.intValue(n); continue; }

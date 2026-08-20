@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "bitmap/Bitmask.hpp"
 #include "bitmap/Resample.hpp"
 #include "dithering/Dithering.hpp"
@@ -21,6 +22,8 @@ void generate(
     const int glyphCount = atlas.glyphCount();
 
     if (cellPx <= 0 || glyphCount <= 0 || outBuffer.width() <= 0 || outBuffer.height() <= 0) return;
+    ASCIIGEN_PROFILE("Bitmask::generate", "select");
+
 
     // Coverage is used as a weight rather than thresholded to 1-bit: downsampled
     // antialiased glyphs peak well below 255, so any fixed cutoff throws most of
@@ -82,13 +85,21 @@ void generate(
     std::vector<float> tileLuma(cellPx);
     std::vector<float> blurLuma(soft ? cellPx : 0);
 
+    // toGrid always hands back a 3-channel plane sized exactly to the grid, so
+    // the tile gather can walk it directly instead of bounds-checking and
+    // re-branching on depth once per subpixel.
+    const byte* const planePx = plane.pixels;
+    const size_t planeStride = (size_t)plane.width * 3;
+
     for (int cy = 0; cy < outBuffer.height(); cy++) {
         for (int cx = 0; cx < outBuffer.width(); cx++) {
             float sumL = 0;
             for (int py = 0; py < atlasH; py++) {
-                for (int px = 0; px < atlasW; px++) {
-                    const PixelColor p = plane.getAt(cx * atlasW + px, cy * atlasH + py);
-                    const RGB c {p.r, p.g, p.b};
+                const byte* p = planePx + (size_t)(cy * atlasH + py) * planeStride
+                                + (size_t)cx * atlasW * 3;
+
+                for (int px = 0; px < atlasW; px++, p += 3) {
+                    const RGB c {p[0], p[1], p[2]};
                     const int i = px + py * atlasW;
                     tile[i] = c;
                     tileLuma[i] = luma(c);

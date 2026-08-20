@@ -9,6 +9,12 @@ asciigen -- font
       Glyph height in pixels used for MATCHING. Bigger tells glyphs apart
       more finely and costs time. 16 is plenty for most work.
 
+      Cost grows with the square, and this also sets the resolution the
+      source filters work at -- see RADII in --help source.
+      8   fast, but M and W stop being distinguishable
+      16  default
+      32  four times the matching work for a barely different picture
+
   --font-render-size N                                       (32/auto)
       Glyph height in pixels used for the OUTPUT PICTURE. Bigger means a
       crisper PNG. With --image-height set it is worked out from that; with
@@ -23,6 +29,9 @@ asciigen -- font
   --font-bold [F]                                                  (0)
       Thickens the outline before it is rasterised, so a regular face renders
       bold with no second font file. Bare --font-bold means 1; 2 is heavy.
+
+      0     off        0.5  a little weight
+      1     bold       2    heavy; thin glyphs start closing up
 
       Applied to the OUTPUT only. Bolding the matching atlas would change
       every glyph's ink coverage and quietly skew which glyph gets picked,
@@ -48,8 +57,13 @@ TWO SIZES, TWO JOBS
 
 MISSING CHARACTERS
 
-  A font that lacks a character in the charset draws it blank, with no
-  warning. This bites with --charset blocks: the bundled Space Mono has none
-  of the Block Elements.
+  A font that lacks a character in the charset draws it as a blank or a box.
+  This bites with --charset blocks and --charset braille, which need Unicode
+  ranges most monospace faces do not carry -- Consolas, the Windows default,
+  has neither.
+
+  If fewer than two distinct shapes survive, asciigen says so and names a
+  font to try instead, because the giveaway is a picture of one repeated
+  character rather than an error.
 
     --charset blocks --font-path C:/Windows/Fonts/CascadiaMono.ttf

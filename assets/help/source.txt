@@ -15,27 +15,59 @@ Nothing here is on by default.
       The best thing to reach for first. Biggest single improvement on a dull
       photo, and it needs no tuning.
 
+      0,100     literal darkest and brightest pixel. One hot pixel or one
+                blown highlight and the stretch does nothing
+      0.5,99.5  default. Ignores the outliers, keeps everything real
+      2,98      aggressive. Visibly crushes the extremes
+
   --source-levels B,W[,G]                                        (off)
       The manual version. Black point, white point, and optionally gamma.
+      B and W are 0-255 tone values, not percentiles.
+
+      20,235      mild stretch
+      40,215,1.2  stronger, and lifted
+      G  1.0 none    1.4 lifts    2.0 heavy lift    0.7 darkens
+
+      CAREFUL: this gamma runs the OPPOSITE way to --grid-gamma. Here above
+      1 brightens; there below 1 brightens. Different formulas, kept as they
+      are because each matches the convention of its own stage.
 
   --source-contrast F                                            (1.0)
       Pivots around mid-grey. Below 1 flattens.
+      0.8  flatter     1.0  off     1.3  noticeable     1.8  harsh, clips
 
   --source-sharpen A[,R]                                         (off)
       Unsharp mask: amount, and optionally radius. Helps --algo structure
       in particular, since a harder edge gives its direction term more to
       go on.
 
+      A  0.3  subtle    0.6  strong (what --preset photo uses)
+         1.0  crunchy   above 1.5  visible halos
+      R  see RADII below. 1 is almost always right.
+
   --source-blur R                                                (off)
       Softens. Worth it on noisy photos, where grain competes with real
       structure for the glyph choice.
 
+      1  denoise, shapes intact     2  visibly softer
+      3  about one cell wide        4+  blurs across cells, goes mushy
 
-A CAVEAT ON RADII
 
-  --source-sharpen and --source-blur take a radius in SOURCE pixels, and they
-  run before the photo is resampled down to the grid. Radius 1 on a
-  1920px-wide photo is a strong effect; the same radius on a 6900px-wide one
-  is nearly invisible by the time it reaches a 160-cell grid.
+RADII
 
-  Scale the radius with the photo, or expect to retune it per image.
+  --source-sharpen and --source-blur take a radius in PLANE pixels -- the
+  resolution the matcher works at, not the resolution of your photo. The
+  photo is resampled down first, then filtered.
+
+  That makes the radius mean the same thing on every picture. A 1920px photo
+  and a 6900px photo at the same grid size get the same result from the same
+  number, so a value that looked right once stays right.
+
+  For scale: one CELL is --font-match-size pixels tall and half that wide, so
+  8x16 plane pixels by default. A radius covers 2R+1 pixels, meaning
+
+    R 1  ->  3px, about a third of a cell across
+    R 3  ->  7px, roughly one whole cell
+    R 4+ ->  wider than a cell; detail bleeds between neighbours
+
+  Raising --font-match-size makes the plane bigger, so radii scale with it.

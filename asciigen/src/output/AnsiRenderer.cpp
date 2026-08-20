@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "output/AnsiRenderer.hpp"
 
 namespace AnsiRenderer {
@@ -41,6 +42,8 @@ static inline void appendUtf8(std::string& out, char32_t cp)
 
 std::string render(const CellBuffer& buffer, const Charset& charset, AnsiRenderOptions opts)
 {
+    ASCIIGEN_PROFILE("AnsiRenderer::render", "output");
+
     std::string out;
     out.reserve(buffer.width() * buffer.height() * 42 + buffer.height() * 8);
 

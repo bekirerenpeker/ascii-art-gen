@@ -82,3 +82,30 @@ FIT MODES
   contain     scale until it fits inside. Nothing is cut off        (default)
   cover       scale until it fills. Edges get cropped
   stretch     exactly the canvas, shape ignored
+
+
+RENDER DETAIL
+
+  --render-detail LEVEL          test | mid | high              (unset)
+
+  One switch for "how much effort is this render worth". Sets glyph size and
+  PNG effort together, so previewing and committing are one word apart:
+
+    test    16px glyphs, fastest encoding
+    mid     32px glyphs, moderate encoding
+    high    64px glyphs, smallest files
+
+  It does NOT touch the grid. How many cells there are decides which glyphs get
+  chosen and how the picture reads -- that is a styling decision, and a preview
+  that changed it would be showing you different art from the one you are about
+  to commit to. Use --grid-width for that, separately and on purpose.
+
+  Because the grid is unchanged, selection costs the same at every level; what
+  test buys you is the render and encode, not the whole run.
+
+  Applied after any --preset, so it overrides the render size a preset picked;
+  applied before your own flags, so --font-render-size still beats it.
+
+  Only touches render resolution and encoding effort. It never changes which
+  glyph gets chosen or what colour it is drawn in -- the composition you preview
+  is the composition you get, at a different size.

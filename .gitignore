@@ -53,3 +53,8 @@ assets/fonts/
 
 # assets/showcase/ is deliberately NOT ignored -- those are rendered output,
 # committed so the README has something to show.
+
+# Local convenience scripts: build/run/install wrappers around the CMake
+# presets, plus the profiling and showcase runners. Machine-specific (paths,
+# fonts, which sample images exist) and not part of the project's interface.
+commands/

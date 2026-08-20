@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "filters/CellFilters.hpp"
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,8 @@ void brightness(CellBuffer& buffer, float gain, float gamma)
 {
     if (gain == 1.f && gamma == 1.f) return;
     if (gain < 0.f || gamma <= 0.f) return;
+    ASCIIGEN_PROFILE("brightness", "filter");
+
 
     for (int y = 0; y < buffer.height(); y++) {
         for (int x = 0; x < buffer.width(); x++) {

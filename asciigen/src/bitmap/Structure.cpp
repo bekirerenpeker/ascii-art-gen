@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "bitmap/Structure.hpp"
 #include "bitmap/Resample.hpp"
 #include "dithering/Dithering.hpp"
@@ -26,6 +27,8 @@ static void buildGlyphModel(const GlyphAtlas& atlas, DescriptorShape shape, Glyp
     out.descriptors.assign(glyphCount, {});
     out.inkWeight.assign(glyphCount, 0.f);
     out.maxCoverage = 0.f;
+    ASCIIGEN_PROFILE("buildGlyphModel", "select");
+
 
     std::vector<float> mask(cellPx);
 
@@ -100,6 +103,8 @@ void generate(
 
     if (cellPx <= 0 || atlas.glyphCount() <= 0) return;
     if (outBuffer.width() <= 0 || outBuffer.height() <= 0) return;
+    ASCIIGEN_PROFILE("Structure::generate", "select");
+
 
     GlyphModel model;
     buildGlyphModel(atlas, opts.shape, model);
@@ -114,13 +119,21 @@ void generate(
     std::vector<float> tileLuma(cellPx);
     Descriptor tileDesc;
 
+    // See Bitmask.cpp: the plane is always 3-channel and exactly grid-sized, so
+    // the gather walks a row pointer rather than paying getAt's per-subpixel
+    // bounds check and depth branch.
+    const byte* const planePx = plane.pixels;
+    const size_t planeStride = (size_t)plane.width * 3;
+
     for (int cy = 0; cy < outBuffer.height(); cy++) {
         for (int cx = 0; cx < outBuffer.width(); cx++) {
             float sumL = 0.f;
             for (int py = 0; py < atlasH; py++) {
-                for (int px = 0; px < atlasW; px++) {
-                    const PixelColor p = plane.getAt(cx * atlasW + px, cy * atlasH + py);
-                    const RGB c {p.r, p.g, p.b};
+                const byte* p = planePx + (size_t)(cy * atlasH + py) * planeStride
+                                + (size_t)cx * atlasW * 3;
+
+                for (int px = 0; px < atlasW; px++, p += 3) {
+                    const RGB c {p[0], p[1], p[2]};
                     const int i = px + py * atlasW;
 
                     tile[i] = c;
