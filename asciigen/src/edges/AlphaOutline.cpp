@@ -1,5 +1,4 @@
-#include "edges/Scharr.hpp"
-#include "bitmap/Resample.hpp"
+#include "edges/AlphaOutline.hpp"
 #include "edges/GradientKernel.hpp"
 #include <algorithm>
 #include <cmath>
@@ -8,20 +7,50 @@ namespace Edges {
 
 static constexpr float kPi = 3.14159265f;
 static constexpr float kBucketArc = kPi / 4.f;
-
-// Scharr weights are 3 + 10 + 3 per side, so a full black-to-white step maxes
-// one axis out at 16 * 255.
 static constexpr float kMaxResponse = 16.f * 255.f;
 
-static float lumaAt(const Image& plane, int x, int y)
+// Plain box downsample of a single coverage byte per pixel -- Resample::toGrid
+// does the equivalent job for RGB weighted BY alpha, which is a different
+// thing from resampling alpha itself.
+static void resampleAlpha(const Image& alpha, Image& outPlane, int outW, int outH)
+{
+    outPlane = Image(outW, outH, 1);
+    if (!alpha.pixels || outW <= 0 || outH <= 0) return;
+
+    const float scaleX = alpha.width / (float)outW;
+    const float scaleY = alpha.height / (float)outH;
+
+    const byte* const src = alpha.pixels;
+    const int srcW = alpha.width, srcH = alpha.height;
+    byte* const dst = outPlane.pixels;
+
+    for (int y = 0; y < outH; y++) {
+        const int y0 = (int)(y * scaleY);
+        const int y1 = std::min(srcH, std::max(y0 + 1, (int)((y + 1) * scaleY)));
+
+        for (int x = 0; x < outW; x++) {
+            const int x0 = (int)(x * scaleX);
+            const int x1 = std::min(srcW, std::max(x0 + 1, (int)((x + 1) * scaleX)));
+
+            int sum = 0, count = 0;
+            for (int sy = y0; sy < y1; sy++) {
+                const byte* row = src + (size_t)sy * srcW + x0;
+                for (int sx = x0; sx < x1; sx++, row++) sum += *row, count++;
+            }
+
+            dst[(size_t)x + (size_t)y * outW] = count ? (byte)(sum / count) : 0;
+        }
+    }
+}
+
+static float alphaAt(const Image& plane, int x, int y)
 {
     x = std::clamp(x, 0, plane.width - 1);
     y = std::clamp(y, 0, plane.height - 1);
-    const PixelColor c = plane.getAt(x, y);
-    return 0.299f * c.r + 0.587f * c.g + 0.114f * c.b;
+    return plane.pixels[x + y * plane.width];
 }
 
-void detectScharr(const Image& image, int cols, int rows, int subsamples, EdgeField& out)
+void detectAlphaOutline(const Image& alpha, int cols, int rows, int subsamples, EdgeField& out)
 {
     const int sub = std::max(1, subsamples);
     const int planeW = cols * sub;
@@ -33,16 +62,16 @@ void detectScharr(const Image& image, int cols, int rows, int subsamples, EdgeFi
     out.coherence.assign((size_t)cols * (size_t)rows, 0.f);
     out.bucket.assign((size_t)cols * (size_t)rows, 0);
 
-    if (!image.pixels || cols <= 0 || rows <= 0) return;
+    if (!alpha.pixels || cols <= 0 || rows <= 0) return;
 
     Image plane;
-    Resample::toGrid(image, plane, planeW, planeH);
+    resampleAlpha(alpha, plane, planeW, planeH);
 
-    // A plane sample is not square in image space -- glyph cells are roughly 1:2 --
-    // so raw gradients describe angles in a vertically squashed copy of the picture.
-    // Each axis gets scaled by its own footprint before any angle is read off it.
-    const float footX = (float)image.width / planeW;
-    const float footY = (float)image.height / planeH;
+    // Same non-square-pixel correction as Scharr: a plane sample covers a
+    // roughly 1:2 footprint of the source, so raw gradients read angles off a
+    // vertically squashed copy unless each axis is scaled back first.
+    const float footX = (float)alpha.width / planeW;
+    const float footY = (float)alpha.height / planeH;
     const float finest = std::min(footX, footY);
     const float scaleX = finest / footX;
     const float scaleY = finest / footY;
@@ -58,31 +87,17 @@ void detectScharr(const Image& image, int cols, int rows, int subsamples, EdgeFi
                     const int y = cy * sub + py;
 
                     const auto g = scharrGradient(
-                        [&](int sx, int sy) { return lumaAt(plane, sx, sy); }, x, y
+                        [&](int sx, int sy) { return alphaAt(plane, sx, sy); }, x, y
                     );
 
-                    // Strength stays in plane space so both axes are equally
-                    // detectable; only the direction is corrected, or horizontal
-                    // edges would need twice the contrast to clear the threshold.
                     const float mag = g.mag / kMaxResponse;
-
-                    // Averaged over EVERY subsample, not just the ones with real
-                    // gradient -- a single hot pixel in an otherwise flat cell (a
-                    // specular highlight, a noise pixel) gets diluted down by the
-                    // 15 flat neighbours around it instead of setting the whole
-                    // cell's strength on its own, the way a peak would.
                     sumMag += mag;
                     if (mag <= 1e-6f) continue;
 
-                    // The gradient points across the edge, so the line itself runs
-                    // 90 degrees off it. Folded to [0, pi) -- a line has no polarity,
-                    // and y grows upward here, so 45 degrees really is up-and-right.
                     float angle = std::atan2(g.gy * scaleY, g.gx * scaleX) + kPi * 0.5f;
                     angle = std::fmod(angle, kPi);
                     if (angle < 0.f) angle += kPi;
 
-                    // Weighted histogram, never an average: 1 and 179 degrees mean
-                    // nearly the same line but average to 90, perpendicular to both.
                     hist[(int)std::lround(angle / kBucketArc) & 3] += mag;
                 }
             }
@@ -101,4 +116,4 @@ void detectScharr(const Image& image, int cols, int rows, int subsamples, EdgeFi
     }
 }
 
-}   // namespace Edges
+};   // namespace Edges

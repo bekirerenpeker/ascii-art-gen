@@ -183,8 +183,20 @@ struct EdgeOptions
 {
     EdgeName name = EdgeName::None;
     int subsamples = 4;
-    float threshold = 0.3f;
+
+    // A mean over the cell's sub-samples, not the strongest one -- see
+    // Edges::Options::threshold. Reads lower than the old peak-based default.
+    float threshold = 0.15f;
     float coherence = 0.55f;
+    float hysteresis = 0.5f;
+    bool nms = true;
+
+    // Separate pass, stamped after the gradient detector above. Reads the
+    // source's own alpha channel rather than inferring a boundary from luma, so
+    // it only does anything on a source that actually has transparency.
+    bool alphaOutline = false;
+    float alphaThreshold = 0.5f;
+    float alphaCoherence = 0.6f;
 };
 
 struct AlgoOptions

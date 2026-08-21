@@ -215,6 +215,27 @@ int run(const Options& opts)
     }
     if (!img.pixels) return 3;
 
+    // Extracted before anything downstream can touch img: the resample for
+    // filters below always produces a 3-channel plane, so this is the only
+    // point where the source's own alpha channel still exists.
+    Image alphaSource;
+    if (opts.edge.alphaOutline) {
+        if (img.depth == 4 || img.depth == 2) {
+            alphaSource = Image(img.width, img.height, 1);
+
+            const int d = img.depth;
+            const byte* src = img.pixels + (d - 1);
+            byte* dst = alphaSource.pixels;
+            const size_t n = (size_t)img.width * (size_t)img.height;
+
+            for (size_t i = 0; i < n; i++, src += d, dst++) *dst = *src;
+        }
+        else {
+            std::cerr << "asciigen: --edge-alpha requested but the source has no alpha "
+                         "channel; skipped.\n";
+        }
+    }
+
     int cols = 0, rows = 0;
     resolveGridSize(opts, img, cols, rows);
 
@@ -241,7 +262,15 @@ int run(const Options& opts)
         .algorithm = Edges::Algorithm::Scharr,
         .subsamples = opts.edge.subsamples,
         .threshold = opts.edge.threshold,
-        .coherence = opts.edge.coherence
+        .coherence = opts.edge.coherence,
+        .hysteresis = opts.edge.hysteresis,
+        .nms = opts.edge.nms
+    };
+
+    Edges::alphaOptions = {
+        .enabled = opts.edge.alphaOutline,
+        .threshold = opts.edge.alphaThreshold,
+        .coherence = opts.edge.alphaCoherence
     };
 
     const std::filesystem::path fontPath = resolveFont(opts);
@@ -350,7 +379,7 @@ int run(const Options& opts)
     // has to come after this.
     {
         ASCIIGEN_PROFILE("edges", "edges");
-        Edges::apply(img, buffer, charset);
+        Edges::apply(img, buffer, charset, alphaSource);
     }
 
     {

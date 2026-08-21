@@ -432,6 +432,13 @@ Result parse(int argc, char* argv[], Options& out)
         if (n == "edge-threshold") { out.edge.threshold = r.floatValue(n); continue; }
         if (n == "edge-coherence") { out.edge.coherence = r.floatValue(n); continue; }
         if (n == "edge-subsamples") { out.edge.subsamples = r.intValue(n); continue; }
+        if (n == "edge-hysteresis") { out.edge.hysteresis = r.floatValue(n); continue; }
+        if (n == "edge-nms") { out.edge.nms = true; continue; }
+        if (n == "no-edge-nms") { out.edge.nms = false; continue; }
+        if (n == "edge-alpha") { out.edge.alphaOutline = true; continue; }
+        if (n == "no-edge-alpha") { out.edge.alphaOutline = false; continue; }
+        if (n == "edge-alpha-threshold") { out.edge.alphaThreshold = r.floatValue(n); continue; }
+        if (n == "edge-alpha-coherence") { out.edge.alphaCoherence = r.floatValue(n); continue; }
 
         // --- algorithm ---
         if (n == "algo") {
