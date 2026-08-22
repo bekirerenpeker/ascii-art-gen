@@ -439,6 +439,36 @@ Result parse(int argc, char* argv[], Options& out)
         if (n == "no-edge-alpha") { out.edge.alphaOutline = false; continue; }
         if (n == "edge-alpha-threshold") { out.edge.alphaThreshold = r.floatValue(n); continue; }
         if (n == "edge-alpha-coherence") { out.edge.alphaCoherence = r.floatValue(n); continue; }
+        if (n == "edge-color") {
+            const std::string v = r.value(n);
+            if (!parseColor(v, out.edge.color)) r.fail("bad --edge-color \"" + v + "\" (#RRGGBB)");
+            out.edge.colorSet = true;
+            continue;
+        }
+        if (n == "no-edge-color") { out.edge.colorSet = false; continue; }
+        if (n == "edge-brightness") { out.edge.brightness = r.floatValue(n); continue; }
+        if (n == "edge-alpha-color") {
+            const std::string v = r.value(n);
+            if (!parseColor(v, out.edge.alphaColor))
+                r.fail("bad --edge-alpha-color \"" + v + "\" (#RRGGBB)");
+            out.edge.alphaColorSet = true;
+            continue;
+        }
+        if (n == "no-edge-alpha-color") { out.edge.alphaColorSet = false; continue; }
+        if (n == "edge-alpha-brightness") { out.edge.alphaBrightness = r.floatValue(n); continue; }
+        if (n == "edge-color-both") {
+            const std::string v = r.value(n);
+            if (!parseColor(v, out.edge.color))
+                r.fail("bad --edge-color-both \"" + v + "\" (#RRGGBB)");
+            out.edge.colorSet = true;
+            out.edge.alphaColor = out.edge.color;
+            out.edge.alphaColorSet = true;
+            continue;
+        }
+        if (n == "edge-brightness-both") {
+            out.edge.brightness = out.edge.alphaBrightness = r.floatValue(n);
+            continue;
+        }
 
         // --- algorithm ---
         if (n == "algo") {

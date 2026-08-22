@@ -264,13 +264,19 @@ int run(const Options& opts)
         .threshold = opts.edge.threshold,
         .coherence = opts.edge.coherence,
         .hysteresis = opts.edge.hysteresis,
-        .nms = opts.edge.nms
+        .nms = opts.edge.nms,
+        .colorSet = opts.edge.colorSet,
+        .color = opts.edge.color,
+        .brightness = opts.edge.brightness
     };
 
     Edges::alphaOptions = {
         .enabled = opts.edge.alphaOutline,
         .threshold = opts.edge.alphaThreshold,
-        .coherence = opts.edge.alphaCoherence
+        .coherence = opts.edge.alphaCoherence,
+        .colorSet = opts.edge.alphaColorSet,
+        .color = opts.edge.alphaColor,
+        .brightness = opts.edge.alphaBrightness
     };
 
     const std::filesystem::path fontPath = resolveFont(opts);

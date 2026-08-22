@@ -2,6 +2,7 @@
 
 #include "core/CellBuffer.hpp"
 #include "core/Charset.hpp"
+#include "core/Color.hpp"
 #include "core/Image.hpp"
 
 namespace Edges {
@@ -48,6 +49,17 @@ struct Options
     // character wide instead of three or four; turning it off restores the old
     // thick-outline behaviour.
     bool nms = true;
+
+    // Overrides the glyph's ink colour on every stamped cell; the background is
+    // left exactly as the selector chose it. Unset means "leave the inherited
+    // colour alone" -- there is no sentinel RGB for that, so it is its own flag.
+    bool colorSet = false;
+    RGB color {255, 255, 255};
+
+    // Applied AFTER color, to whichever colour the cell ends up with -- fixed or
+    // inherited. Plain linear gain, same as CellFilters::brightness: below 1
+    // darkens, above 1 brightens and clips at 255.
+    float brightness = 1.f;
 };
 
 inline Options options;
@@ -70,6 +82,13 @@ struct AlphaOptions
     // Same meaning as Options::coherence, applied to the alpha gradient's own
     // direction agreement.
     float coherence = 0.6f;
+
+    // Independent of Options::colorSet/color/brightness above -- a source that
+    // carries alpha may still want Scharr's own outlines tinted differently
+    // from the silhouette pass, so neither defaults from the other.
+    bool colorSet = false;
+    RGB color {255, 255, 255};
+    float brightness = 1.f;
 };
 
 inline AlphaOptions alphaOptions;

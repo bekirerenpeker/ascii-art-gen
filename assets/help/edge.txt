@@ -121,3 +121,36 @@ ALPHA OUTLINE
   Shares --edge-subsamples and --edge-hysteresis with Scharr -- both are
   about sampling density and ridge cleanup, which mean the same thing for
   either channel.
+
+
+COLOUR
+
+  Only the glyph's ink is touched -- the background stays whatever the
+  selector (or --backdrop) already gave the cell, so an outline tints the
+  stroke rather than cutting a flat-coloured hole in the picture. Applied
+  as edges are stamped, so --grid-gamma/vibrance/palette still run on top
+  of whatever colour ends up here, same as everywhere else.
+
+  Scharr and alpha outline colour independently -- a photo's inferred edges
+  and a sprite's true silhouette often want different treatment.
+
+  --edge-color #RRGGBB                                          (off)
+  --no-edge-color
+      Fixed colour for Scharr's own stamped cells. Off means inherit
+      whatever colour the selector already chose for that cell.
+
+  --edge-brightness F                                            (1.0)
+      Gain on Scharr's stamped cells, applied AFTER --edge-color -- so it
+      works whether or not a fixed colour is set, as a plain "make the
+      outline pop" dial that needs no colour picking at all.
+      0.6  darker     1.0  off     1.4  brighter, clips at white
+
+  --edge-alpha-color #RRGGBB     --no-edge-alpha-color            (off)
+  --edge-alpha-brightness F                                      (1.0)
+      Same two knobs, for the alpha outline pass.
+
+  --edge-color-both #RRGGBB
+  --edge-brightness-both F
+      Sets both the Scharr and alpha versions in one flag. Ordinary
+      left-to-right override rules apply: put a more specific
+      --edge-alpha-color AFTER this if you want it to win for alpha only.

@@ -191,12 +191,24 @@ struct EdgeOptions
     float hysteresis = 0.5f;
     bool nms = true;
 
+    // Ink colour override for Scharr's own stamped cells. colorSet false means
+    // "leave the selector's colour alone" -- there's no sentinel RGB for that.
+    bool colorSet = false;
+    RGB color {255, 255, 255};
+    float brightness = 1.f;
+
     // Separate pass, stamped after the gradient detector above. Reads the
     // source's own alpha channel rather than inferring a boundary from luma, so
     // it only does anything on a source that actually has transparency.
     bool alphaOutline = false;
     float alphaThreshold = 0.5f;
     float alphaCoherence = 0.6f;
+
+    // Independent of colorSet/color/brightness above, on purpose -- the two
+    // passes commonly want different treatment (see --help edge).
+    bool alphaColorSet = false;
+    RGB alphaColor {255, 255, 255};
+    float alphaBrightness = 1.f;
 };
 
 struct AlgoOptions
