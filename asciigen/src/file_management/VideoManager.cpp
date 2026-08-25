@@ -13,6 +13,19 @@ namespace VideoManager {
 
 namespace {
 
+// FFmpeg logs warnings/errors straight to stderr on its own, asynchronously
+// from whichever thread hit them -- which, with the video pipeline's own
+// cursor-tracked progress display also writing to the terminal, is exactly the
+// kind of interleaving that corrupts it: a single unexpected log line between
+// two redraws throws off how many lines the display thinks it needs to move
+// back over. Quieted once, here, so every failure path in this file surfaces
+// through this project's own std::cerr messages and return codes instead --
+// see VideoReader/VideoWriter's own error handling for those.
+struct QuietFFmpegLogging
+{
+    QuietFFmpegLogging() { av_log_set_level(AV_LOG_QUIET); }
+} const quietFFmpegLogging;
+
 // Every FFmpeg handle this reader owns, zero-initialised so the destructor can tear
 // down a partially-opened file (a failure halfway through the open sequence) the same
 // way it tears down a fully-opened one -- each av_*_free is already a no-op on null.
@@ -189,7 +202,224 @@ bool VideoReader::nextFrame(Image& out)
 bool looksLikeVideo(const std::filesystem::path& filepath)
 {
     RawHandles h;
-    return openVideoStream(filepath, h, true);
+    if (!openVideoStream(filepath, h, true)) return false;
+
+    // A single still image still reports a "video" stream once opened this way
+    // -- FFmpeg's own pipe demuxers (png_pipe, image2 for a lone jpg, ...) model
+    // an image as a one-frame video, complete with a fake frame rate. Measured
+    // directly rather than assumed: a bare PNG reports nb_frames unknown and
+    // duration unknown; a bare JPEG reports nb_frames unknown and a duration of
+    // EXACTLY one frame at the fake rate (0.04s at the default 25fps = 1/25); a
+    // real video reports either a genuine nb_frames above 1, or a duration
+    // spanning meaningfully more than one frame. So: a stream existing is not
+    // enough on its own, only a stream that's clearly carrying more than one
+    // frame's worth of content counts as video here.
+    const AVStream* stream = h.fmt->streams[h.streamIndex];
+    if (stream->nb_frames > 1) return true;
+
+    double durationSeconds = 0.0;
+    if (stream->duration != AV_NOPTS_VALUE)
+        durationSeconds = stream->duration * av_q2d(stream->time_base);
+    else if (h.fmt->duration != AV_NOPTS_VALUE)
+        durationSeconds = (double)h.fmt->duration / AV_TIME_BASE;
+
+    if (durationSeconds <= 0.0) return false;   // unknown duration -- the still-image case
+
+    const AVRational fpsRational = av_guess_frame_rate(h.fmt, const_cast<AVStream*>(stream), nullptr);
+    const double fps = (fpsRational.num > 0 && fpsRational.den > 0) ? av_q2d(fpsRational) : 0.0;
+    if (fps <= 0.0) return true;   // a real duration but no frame rate to estimate a count from -- assume video
+
+    return durationSeconds * fps > 1.5;   // meaningfully more than one frame's worth
+}
+
+namespace {
+
+// Mirrors RawHandles above, for the encode side. Zero-initialised for the same
+// reason: a failure partway through open() still tears down cleanly.
+struct WriterHandles
+{
+    AVFormatContext* fmt = nullptr;
+    AVCodecContext* codec = nullptr;
+    AVStream* stream = nullptr;
+    SwsContext* sws = nullptr;
+    AVFrame* frame = nullptr;
+    AVPacket* packet = nullptr;
+    bool fileOpened = false;   // whether avio_open succeeded -- only then does avio_closep apply
+    bool headerWritten = false;
+    int64_t nextPts = 0;
+
+    ~WriterHandles()
+    {
+        if (sws) sws_freeContext(sws);
+        if (frame) av_frame_free(&frame);
+        if (packet) av_packet_free(&packet);
+        if (codec) avcodec_free_context(&codec);
+        if (fmt) {
+            if (fileOpened && fmt->pb) avio_closep(&fmt->pb);
+            avformat_free_context(fmt);
+        }
+    }
+};
+
+}   // namespace
+
+struct VideoWriter::Impl
+{
+    WriterHandles h;
+    int width = 0, height = 0;
+    bool open = false;
+    bool finished = false;
+};
+
+VideoWriter::VideoWriter(const std::filesystem::path& filepath, int width, int height, double fps)
+    : m_impl(std::make_unique<Impl>())
+{
+    ASCIIGEN_PROFILE("VideoWriter::open", "io");
+
+    WriterHandles& h = m_impl->h;
+    m_impl->width = width;
+    m_impl->height = height;
+
+    if (width <= 0 || height <= 0 || fps <= 0.0) return;
+
+    avformat_alloc_output_context2(&h.fmt, nullptr, nullptr, filepath.string().c_str());
+    if (!h.fmt) {
+        std::cout << "couldnt determine a container format for \"" << filepath << "\"\n";
+        return;
+    }
+
+    // See VideoManager.hpp's note on VideoWriter: fixed to MPEG-4 part 2, the one
+    // video encoder guaranteed present with no extra runtime dependency in this
+    // project's LGPL FFmpeg build.
+    const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+    if (!encoder) return;
+
+    h.stream = avformat_new_stream(h.fmt, nullptr);
+    if (!h.stream) return;
+
+    h.codec = avcodec_alloc_context3(encoder);
+    if (!h.codec) return;
+
+    // A plain N/1 time base, one tick per frame -- pts is just a frame counter
+    // below rather than needing to track wall-clock time anywhere.
+    const AVRational timeBase = av_d2q(1.0 / fps, 1000000);
+    h.codec->width = width;
+    h.codec->height = height;
+    h.codec->pix_fmt = AV_PIX_FMT_YUV420P;
+    h.codec->time_base = timeBase;
+    h.codec->framerate = av_inv_q(timeBase);
+    h.codec->gop_size = 12;
+
+    // A round-number-ish default rather than a computed one -- good enough to
+    // not look blocky at typical ascii-render resolutions; not tuned.
+    h.codec->bit_rate = (int64_t)width * height * 4;
+
+    if (h.fmt->oformat->flags & AVFMT_GLOBALHEADER) h.codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+    if (avcodec_open2(h.codec, encoder, nullptr) < 0) return;
+    if (avcodec_parameters_from_context(h.stream->codecpar, h.codec) < 0) return;
+    h.stream->time_base = h.codec->time_base;
+
+    if (!(h.fmt->oformat->flags & AVFMT_NOFILE)) {
+        if (avio_open(&h.fmt->pb, filepath.string().c_str(), AVIO_FLAG_WRITE) < 0) {
+            std::cout << "couldnt open \"" << filepath << "\" for writing\n";
+            return;
+        }
+        h.fileOpened = true;
+    }
+
+    if (avformat_write_header(h.fmt, nullptr) < 0) return;
+    h.headerWritten = true;
+
+    h.frame = av_frame_alloc();
+    h.packet = av_packet_alloc();
+    if (!h.frame || !h.packet) return;
+
+    h.frame->format = AV_PIX_FMT_YUV420P;
+    h.frame->width = width;
+    h.frame->height = height;
+    if (av_frame_get_buffer(h.frame, 0) < 0) return;
+
+    m_impl->open = true;
+}
+
+VideoWriter::~VideoWriter()
+{
+    if (m_impl && m_impl->open && !m_impl->finished) finish();
+}
+
+bool VideoWriter::isOpen() const { return m_impl->open; }
+
+bool VideoWriter::writeFrame(const Image& frameImg)
+{
+    if (!m_impl->open || m_impl->finished) return false;
+    if (!frameImg.pixels || frameImg.width != m_impl->width || frameImg.height != m_impl->height
+        || frameImg.depth != 3)
+        return false;
+
+    ASCIIGEN_PROFILE("VideoWriter::writeFrame", "io");
+    WriterHandles& h = m_impl->h;
+    const int w = m_impl->width, hgt = m_impl->height;
+
+    if (!h.sws) {
+        h.sws = sws_getContext(
+            w, hgt, AV_PIX_FMT_RGB24, w, hgt, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr,
+            nullptr
+        );
+        if (!h.sws) return false;
+    }
+
+    if (av_frame_make_writable(h.frame) < 0) return false;
+
+    // Same bottom-to-top row order every Image already uses (see VideoReader's
+    // convertFrame) -- read backward from the last row instead of flipping first.
+    const byte* src[4] = {frameImg.pixels + (size_t)(hgt - 1) * w * 3, nullptr, nullptr, nullptr};
+    const int srcStride[4] = {-(w * 3), 0, 0, 0};
+    sws_scale(h.sws, src, srcStride, 0, hgt, h.frame->data, h.frame->linesize);
+
+    h.frame->pts = h.nextPts++;
+
+    if (avcodec_send_frame(h.codec, h.frame) < 0) return false;
+
+    for (;;) {
+        const int ret = avcodec_receive_packet(h.codec, h.packet);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+        if (ret < 0) return false;
+
+        av_packet_rescale_ts(h.packet, h.codec->time_base, h.stream->time_base);
+        h.packet->stream_index = h.stream->index;
+        av_interleaved_write_frame(h.fmt, h.packet);
+        av_packet_unref(h.packet);
+    }
+
+    return true;
+}
+
+bool VideoWriter::finish()
+{
+    if (!m_impl->open || m_impl->finished) return false;
+    m_impl->finished = true;
+
+    ASCIIGEN_PROFILE("VideoWriter::finish", "io");
+    WriterHandles& h = m_impl->h;
+
+    // Flush: the encoder may still be holding frames back for lookahead/
+    // reordering: a null frame tells it no more are coming, and receive_packet
+    // keeps handing back whatever it was still sitting on until it's drained.
+    avcodec_send_frame(h.codec, nullptr);
+    for (;;) {
+        const int ret = avcodec_receive_packet(h.codec, h.packet);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+        if (ret < 0) break;
+
+        av_packet_rescale_ts(h.packet, h.codec->time_base, h.stream->time_base);
+        h.packet->stream_index = h.stream->index;
+        av_interleaved_write_frame(h.fmt, h.packet);
+        av_packet_unref(h.packet);
+    }
+
+    if (h.headerWritten) av_write_trailer(h.fmt);
+    return true;
 }
 
 }   // namespace VideoManager

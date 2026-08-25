@@ -12,6 +12,34 @@ asciigen -- input
 
   Formats: png jpg bmp tga gif psd hdr
 
+  Also accepts video (mp4, and in principle whatever container/codec the
+  underlying FFmpeg build can decode -- verified so far against H.264-in-MP4).
+  Detected by content, not extension: opened and probed for a real multi-frame
+  video stream, so a single still image never gets misread as one. A video
+  input needs a video --out (mp4, mkv, mov, avi, webm, m4v) -- see --preview
+  below for the one exception.
+
+
+PREVIEW ONE FRAME
+
+  --preview [N]                                                   (off)
+      For a video input only: decode up to (and use) just one frame -- frame
+      N, or frame 0 if N is omitted -- and run it through the ordinary
+      still-image pipeline instead of processing and re-encoding the whole
+      clip. Lets algorithm/render options be tuned against a real frame from
+      the video without waiting on the rest of it every time.
+
+      With --preview, a video input can be written to any image/text output
+      (.png, .jpg, .ans, .txt) -- the video-only --out restriction above only
+      applies without it, since without it the output really is a whole video.
+
+      There is no seeking (see the video decoder's own notes): getting to
+      frame N always means decoding frames 0..N first, so this is the
+      cheapest a specific frame can ever be reached, not a shortcut past that.
+
+        asciigen clip.mp4 --preview --out frame0.png
+        asciigen clip.mp4 --preview 40 --algo bitmask --out frame40.png
+
 
 TEXT PASSTHROUGH
 

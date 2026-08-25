@@ -56,4 +56,39 @@ class VideoReader
 // not as a full open -- opens and immediately closes the demuxer.
 bool looksLikeVideo(const std::filesystem::path& filepath);
 
+// Encodes and muxes frames into one video file. Codec is fixed to MPEG-4 part 2
+// (AV_CODEC_ID_MPEG4) rather than made configurable yet -- it is FFmpeg's own
+// native encoder, present with zero extra runtime dependencies in the LGPL build
+// this project fetches (see lib/ffmpeg/CMakeLists.txt); H.264 needs libx264
+// (GPL, not in that build) and the LGPL-safe alternatives here (libopenh264,
+// libvpx) need their own external shared libraries this project doesn't vendor.
+// Worth revisiting once that's sorted out -- not a permanent ceiling.
+class VideoWriter
+{
+  public:
+    // `width`/`height` must be even -- YUV420P halves both chroma planes.
+    VideoWriter(const std::filesystem::path& filepath, int width, int height, double fps);
+    ~VideoWriter();
+
+    VideoWriter(const VideoWriter&) = delete;
+    VideoWriter& operator=(const VideoWriter&) = delete;
+
+    bool isOpen() const;
+
+    // Encodes and muxes one frame. MUST be called in presentation order (frame 0
+    // first, frame 1 second, ...) -- the encoder and muxer both assume it, same
+    // as any video file. `frame` must be RGB24, exactly (width, height) as given
+    // to the constructor.
+    bool writeFrame(const Image& frame);
+
+    // Flushes the encoder (frames it's still holding for lookahead/reordering)
+    // and writes the trailer. Called by the destructor too if it wasn't already
+    // -- but the return value only reaches a caller that calls this directly.
+    bool finish();
+
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+};
+
 }   // namespace VideoManager

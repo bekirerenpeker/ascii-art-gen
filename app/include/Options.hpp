@@ -117,6 +117,13 @@ struct InputOptions
 
     // Set from the extension, not by a flag: .txt and .ans are printed as-is.
     bool passthrough = false;
+
+    // -1 means "not requested". Set by --preview: decode a video input only up
+    // to (and use) this one frame, then run it through the ordinary
+    // still-image pipeline instead of the video one -- lets algorithm/render
+    // options be tuned against a real frame without waiting for the whole
+    // clip. No effect on an input that isn't a video.
+    int previewFrame = -1;
 };
 
 struct SourceOptions

@@ -318,6 +318,19 @@ Result parse(int argc, char* argv[], Options& out)
 
         // --- input ---
         if (n == "input") { out.input.path = r.value(n); continue; }
+        if (n == "preview") {
+            out.input.previewFrame = 0;
+
+            std::string v;
+            if (r.optionalValue(v)) {
+                try {
+                    out.input.previewFrame = std::stoi(v);
+                } catch (...) {
+                    r.fail("--preview expects a frame number, got \"" + v + "\"");
+                }
+            }
+            continue;
+        }
 
         // --- source ---
         if (n == "source-auto-levels") {

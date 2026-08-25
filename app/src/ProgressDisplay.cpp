@@ -20,17 +20,37 @@ constexpr const char* kBarFillColor = "\x1b[38;2;138;212;135m"; // soft green
 constexpr const char* kBarEmptyColor = "\x1b[38;2;90;90;90m";   // dim grey
 constexpr const char* kPercentColor = "\x1b[38;2;180;180;180m";
 
+// Fixed so the bar's own start column never moves between redraws -- without
+// this, "thread 1" growing into "thread 1 (frame 18)" (or "select" shrinking
+// to "idle") shifts everything after it sideways on every single frame, which
+// reads as the whole display jittering rather than a bar filling in place.
+// Sized generously: 26 covers "thread 12 (frame 123456)" with room to spare;
+// 10 covers "processed", the longest stage name in use, plus a couple more.
+constexpr size_t kLabelWidth = 26;
+constexpr size_t kStageWidth = 10;
+
+std::string padTo(std::string s, size_t width)
+{
+    if (s.size() > width) s.resize(width);
+    else s.resize(width, ' ');
+    return s;
+}
+
 std::string renderOneLine(const Line& line)
 {
-    const float fraction = std::clamp(line.progress->fraction.load(std::memory_order_relaxed), 0.f, 1.f);
-    const char* stage = line.progress->stage.load(std::memory_order_relaxed);
+    const Snapshot snap = line.read();
+    const float fraction = std::clamp(snap.fraction, 0.f, 1.f);
+    const std::string label = padTo(snap.label, kLabelWidth);
+    const std::string stage = padTo(snap.stage, kStageWidth);
 
     int cols = 0, rows = 0;
     const int totalWidth = (Terminal::getSize(cols, rows) && cols > 20) ? std::min(cols - 1, 100) : 70;
 
-    // Budget: label, " [", stage, "] [", bar, "]", " NNN%". Bar takes whatever's
-    // left, clamped so it never vanishes on a narrow terminal or balloons on a huge one.
-    const int fixedWidth = (int)line.label.size() + (int)std::string(stage).size() + 11;
+    // Budget: label, " [", stage, "] [", bar, "]", " NNN%". Both label and stage
+    // are fixed-width now, so this (and therefore barWidth) stays constant across
+    // every redraw of this run -- it can only change between runs, if the
+    // terminal itself was resized.
+    const int fixedWidth = (int)kLabelWidth + (int)kStageWidth + 11;
     const int barWidth = std::clamp(totalWidth - fixedWidth, 10, 40);
 
     const int filled = (int)std::lround(barWidth * fraction);
@@ -47,7 +67,7 @@ std::string renderOneLine(const Line& line)
 
     std::string out;
     out += kLabelColor;
-    out += line.label;
+    out += label;
     out += kReset;
     out += " [";
     out += kStageColor;
