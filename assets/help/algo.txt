@@ -28,6 +28,21 @@ SHARED BY EVERY ALGORITHM
   --algo-ramp-chars "STR"                             (" .:-=+*#%@")
       The ordered list ramp steps through, light to dark.
 
+  --resample-filter NAME                          auto | box | triangle
+                                                                  (auto)
+      How the source gets resized to the working resolution every algorithm
+      reads from. auto picks a real cubic filter by direction -- Mitchell
+      shrinking, Catmull-Rom growing -- both sharper and smoother than a
+      plain average, especially when growing a small source. box and
+      triangle force one filter both ways instead: cheaper, and mostly a
+      stylistic choice rather than a quality one -- try it, don't assume
+      it'll matter. box is not a reconstruction of an older, simpler filter
+      this tool used to use -- measured meaningfully different even from
+      that -- so don't reach for it expecting "the safe old behaviour".
+      auto      default, real cubic interpolation
+      triangle  cheaper, closer to auto's own output than box is
+      box       cheapest, the most different from auto of the three
+
 
 --algo bitmask
 

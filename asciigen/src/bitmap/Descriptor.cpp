@@ -1,5 +1,4 @@
 #include "bitmap/Descriptor.hpp"
-#include "core/Profiler.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -92,15 +91,6 @@ void buildDescriptor(
     out.massStrength = 0.f;
 
     if (!cell || w <= 0 || h <= 0) return;
-
-    // Call-granularity, not per-pixel: this runs 45,000+ times a frame at
-    // ascii, which is already enough events that a per-pixel scope inside the
-    // loop below would make the mutex-locked trace write itself the dominant
-    // cost. This is as fine as the trace can safely go -- for a breakdown
-    // finer than "how much of Structure::generate is buildDescriptor", use a
-    // sampling profiler (Visual Studio's CPU Usage tool, Windows Performance
-    // Analyzer) against a release build with debug info instead.
-    ASCIIGEN_PROFILE("buildDescriptor", "select");
 
     // T2: caller-owned, so this resizes in place instead of allocating fresh --
     // buildDescriptor runs once per glyph and once per cell, tens of thousands

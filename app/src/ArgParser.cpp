@@ -514,6 +514,14 @@ Result parse(int argc, char* argv[], Options& out)
             out.algo.structureFlatThreshold = r.floatValue(n);
             continue;
         }
+        if (n == "resample-filter") {
+            const std::string v = r.value(n);
+            if (v == "auto") out.algo.resampleFilter = ResampleFilterName::Auto;
+            else if (v == "box") out.algo.resampleFilter = ResampleFilterName::Box;
+            else if (v == "triangle") out.algo.resampleFilter = ResampleFilterName::Triangle;
+            else r.fail("unknown --resample-filter \"" + v + "\" (auto, box, triangle)");
+            continue;
+        }
 
         // --- backdrop ---
         if (n == "backdrop") {

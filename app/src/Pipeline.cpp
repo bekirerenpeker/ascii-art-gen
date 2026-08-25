@@ -314,26 +314,23 @@ int run(const Options& opts)
                   << "  --font-path C:/Windows/Fonts/CascadiaMono.ttf\n";
     }
 
-    // Resampled BEFORE the filters, not after. Only cell-resolution detail
-    // survives into the selector, so filtering the full-size source spends most
-    // of its work on pixels about to be averaged away -- and sharpening in
-    // particular is largely undone by that averaging. Doing it here is both far
-    // cheaper and more effective, because the detail it enhances is the detail
-    // the selector actually sees.
-    //
     // Ramp reads one sample per cell; everything else works at atlas resolution.
     const int planeW = opts.algo.name == AlgoName::Ramp ? cols : cols * std::max(1, matchH / 2);
     const int planeH = opts.algo.name == AlgoName::Ramp ? rows : rows * matchH;
 
-    {
+    Resample::Filter resampleFilter = Resample::Filter::Auto;
+    if (opts.algo.resampleFilter == ResampleFilterName::Box) resampleFilter = Resample::Filter::Box;
+    else if (opts.algo.resampleFilter == ResampleFilterName::Triangle)
+        resampleFilter = Resample::Filter::Triangle;
+
+    auto doResample = [&]() {
         ASCIIGEN_PROFILE("resample for filters", "resample");
-
         Image plane;
-        Resample::toGrid(img, plane, planeW, planeH);
+        Resample::toGrid(img, plane, planeW, planeH, resampleFilter);
         img = std::move(plane);
-    }
+    };
 
-    {
+    auto doFilters = [&]() {
         ASCIIGEN_PROFILE("source filters", "filter");
 
         if (opts.source.autoLevels)
@@ -346,12 +343,32 @@ int run(const Options& opts)
         if (opts.source.blurRadius > 0) ImageFilters::blur(img, opts.source.blurRadius);
         if (opts.source.sharpenAmount > 0.f)
             ImageFilters::unsharpMask(img, opts.source.sharpenAmount, opts.source.sharpenRadius);
+    };
+
+    // Whichever side has fewer pixels goes first. A source bigger than the
+    // plane (the common case) gets resampled down before filtering -- most of
+    // it would be smoothed away regardless, so filtering it in full is wasted
+    // work, and sharpening in particular is largely undone by the later
+    // averaging. A source smaller than the plane -- easy to hit at a large
+    // --grid-height, since the plane's size follows grid size, not the
+    // source's -- gets filtered first instead: resampling it up before
+    // filtering would mean filtering mostly-interpolated pixels the resample
+    // just invented, for no real detail gained. This is a genuinely different
+    // operation on different pixels either way, not just a speed choice --
+    // see optimizations.md's "plane is upsampled" entry.
+    if ((size_t)img.width * (size_t)img.height < (size_t)planeW * (size_t)planeH) {
+        doFilters();
+        doResample();
+    }
+    else {
+        doResample();
+        doFilters();
     }
 
 
     switch (opts.algo.name) {
     case AlgoName::Ramp:
-        Ramp::generate(img, buffer, charset, opts.algo.rampChars);
+        Ramp::generate(img, buffer, charset, opts.algo.rampChars, resampleFilter);
         break;
 
     case AlgoName::Bitmask:
@@ -360,7 +377,8 @@ int run(const Options& opts)
             {.allowBackground = opts.algo.allowBackground,
              .brightnessGamma = opts.algo.brightnessGamma,
              .softness = opts.algo.bitmaskSoftness,
-             .blurRadius = opts.algo.bitmaskBlurRadius}
+             .blurRadius = opts.algo.bitmaskBlurRadius,
+             .resampleFilter = resampleFilter}
         );
         break;
 
@@ -379,7 +397,8 @@ int run(const Options& opts)
              .brightnessGamma = opts.algo.brightnessGamma,
              .gradientStride = opts.algo.structureGradientStride,
              .fastAtan = opts.algo.structureFastAtan,
-             .flatThreshold = opts.algo.structureFlatThreshold}
+             .flatThreshold = opts.algo.structureFlatThreshold,
+             .resampleFilter = resampleFilter}
         );
         break;
     }

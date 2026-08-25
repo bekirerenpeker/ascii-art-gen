@@ -1,5 +1,6 @@
 #pragma once
 
+#include "bitmap/Resample.hpp"
 #include "core/CellBuffer.hpp"
 #include "core/Image.hpp"
 #include "font/GlyphAtlas.hpp"
@@ -28,6 +29,9 @@ struct BitmaskOptions
 
     // Blur radius in cell pixels, i.e. how far a stroke may drift and still match.
     int blurRadius = 1;
+
+    // Which filter builds the plane this all works from. See Resample.hpp.
+    Resample::Filter resampleFilter = Resample::Filter::Auto;
 };
 
 void generate(

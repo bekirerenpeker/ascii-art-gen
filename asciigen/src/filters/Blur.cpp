@@ -6,7 +6,7 @@
 
 namespace ImageFilters {
 
-void blur(const float* src, float* dst, int w, int h, int radius)
+void blur(const float* src, float* dst, int w, int h, int radius, std::vector<float>& scratch)
 {
     if (!src || !dst || w <= 0 || h <= 0) return;
 
@@ -16,7 +16,8 @@ void blur(const float* src, float* dst, int w, int h, int radius)
     }
 
     const float norm = 1.f / (2 * radius + 1);
-    std::vector<float> tmp((size_t)w * (size_t)h);
+    scratch.resize((size_t)w * (size_t)h);
+    std::vector<float>& tmp = scratch;
 
     // Separable, horizontal then vertical. Borders clamp rather than wrap, so a
     // stroke touching one edge of a glyph cannot bleed round to the opposite one.
@@ -45,7 +46,7 @@ void blur(Image& image, int radius)
 
 
     const size_t n = (size_t)image.width * (size_t)image.height;
-    std::vector<float> ch(n), soft(n);
+    std::vector<float> ch(n), soft(n), scratch;
 
     // Hoisted out of the loops on purpose: byte writes may alias anything, so
     // going through getAt/setAt would reload width/height/depth after every
@@ -63,7 +64,7 @@ void blur(Image& image, int radius)
         const byte* src = px + c;
         for (size_t i = 0; i < n; i++, src += d) ch[i] = *src;
 
-        blur(ch.data(), soft.data(), image.width, image.height, radius);
+        blur(ch.data(), soft.data(), image.width, image.height, radius, scratch);
 
         byte* dst = px + c;
         for (size_t i = 0; i < n; i++, dst += d)

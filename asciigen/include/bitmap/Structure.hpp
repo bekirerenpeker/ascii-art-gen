@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bitmap/Descriptor.hpp"
+#include "bitmap/Resample.hpp"
 #include "core/CellBuffer.hpp"
 #include "core/Color.hpp"
 #include "core/Image.hpp"
@@ -51,6 +52,9 @@ struct StructureOptions
     // rare on a real photo -- so this defaults a little above that, small
     // enough to still mean "basically flat", not "mostly flat".
     float flatThreshold = 0.02f;
+
+    // Which filter builds the plane this all works from. See Resample.hpp.
+    Resample::Filter resampleFilter = Resample::Filter::Auto;
 };
 
 void generate(

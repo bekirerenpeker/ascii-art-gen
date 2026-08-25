@@ -469,7 +469,9 @@ void generate(
     // Same plane every selector works from: one resample at atlas resolution,
     // then dithered at cell granularity, since that is the unit being quantised.
     Image plane;
-    Resample::toGrid(image, plane, outBuffer.width() * atlasW, outBuffer.height() * atlasH);
+    Resample::toGrid(
+        image, plane, outBuffer.width() * atlasW, outBuffer.height() * atlasH, opts.resampleFilter
+    );
     Dithering::apply(plane, atlasW, atlasH);
 
     std::vector<RGB> tile(cellPx);
@@ -496,27 +498,20 @@ void generate(
     const byte* const planePx = plane.pixels;
     const size_t planeStride = (size_t)plane.width * 3;
 
-    // Call/cell-granularity scopes, not per-pixel, for the same reason as
-    // buildDescriptor's own in Descriptor.cpp -- 45,700 events a frame is the
-    // safe ceiling for the mutex-locked trace write; splitting further than
-    // this would make the write itself the thing being measured.
     for (int cy = 0; cy < outBuffer.height(); cy++) {
         for (int cx = 0; cx < outBuffer.width(); cx++) {
             float sumL = 0.f;
-            {
-                ASCIIGEN_PROFILE("tile gather", "select");
-                for (int py = 0; py < atlasH; py++) {
-                    const byte* p = planePx + (size_t)(cy * atlasH + py) * planeStride
-                                    + (size_t)cx * atlasW * 3;
+            for (int py = 0; py < atlasH; py++) {
+                const byte* p = planePx + (size_t)(cy * atlasH + py) * planeStride
+                                + (size_t)cx * atlasW * 3;
 
-                    for (int px = 0; px < atlasW; px++, p += 3) {
-                        const RGB c {p[0], p[1], p[2]};
-                        const int i = px + py * atlasW;
+                for (int px = 0; px < atlasW; px++, p += 3) {
+                    const RGB c {p[0], p[1], p[2]};
+                    const int i = px + py * atlasW;
 
-                        tile[i] = c;
-                        tileLuma[i] = luma(c);
-                        sumL += tileLuma[i];
-                    }
+                    tile[i] = c;
+                    tileLuma[i] = luma(c);
+                    sumL += tileLuma[i];
                 }
             }
 
@@ -525,26 +520,19 @@ void generate(
                 opts.gradientStride, opts.fastAtan
             );
 
-            int glyph = 0;
-            {
-                ASCIIGEN_PROFILE("pickGlyph", "select");
-                glyph = pickGlyph(
-                    tileDesc, sumL / cellPx, model, cellPx, opts, tileOriCoeffs, tileMassCoeffs,
-                    exactEvals, flatHits
-                );
-            }
+            const int glyph = pickGlyph(
+                tileDesc, sumL / cellPx, model, cellPx, opts, tileOriCoeffs, tileMassCoeffs,
+                exactEvals, flatHits
+            );
 
             Cell& cell = outBuffer.getAt(cx, cy);
             cell.glyphIndex = (uint16_t)glyph;
 
-            {
-                ASCIIGEN_PROFILE("solveCellColor", "select");
-                solveCellColor(
-                    tile.data(), atlas.getGlyphBegin(glyph), cellPx, model.inkWeight[glyph],
-                    {.allowBackground = opts.allowBackground, .brightnessGamma = opts.brightnessGamma},
-                    cell.fg, cell.bg
-                );
-            }
+            solveCellColor(
+                tile.data(), atlas.getGlyphBegin(glyph), cellPx, model.inkWeight[glyph],
+                {.allowBackground = opts.allowBackground, .brightnessGamma = opts.brightnessGamma},
+                cell.fg, cell.bg
+            );
         }
     }
 

@@ -35,6 +35,13 @@ enum class DitherName
     Bayer4,
 };
 
+enum class ResampleFilterName
+{
+    Auto,
+    Box,
+    Triangle,
+};
+
 enum class EdgeName
 {
     None,
@@ -254,6 +261,14 @@ struct AlgoOptions
 
     // Only Ramp reads this: it wants an ordered string, not a glyph set.
     std::string rampChars = " .:-=+*#%@";
+
+    // Shared by all three algorithms -- see Resample.hpp. Auto (the default)
+    // picks a real cubic filter by direction; Box and Triangle force one
+    // filter both ways. Box is not a match for the resample's own old,
+    // hand-rolled per-pixel average -- measured meaningfully different from
+    // it -- so it is offered as "the other stb filter", not "the exact
+    // previous behaviour".
+    ResampleFilterName resampleFilter = ResampleFilterName::Auto;
 };
 
 struct BackdropOptions
