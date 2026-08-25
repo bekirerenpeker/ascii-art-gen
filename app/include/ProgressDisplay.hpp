@@ -1,25 +1,26 @@
 #pragma once
 
 #include "core/FrameProgress.hpp"
-#include <atomic>
+#include <functional>
 #include <string>
-#include <thread>
 #include <vector>
 
 // Draws live progress to the terminal without ever touching the thing being
 // measured. Two halves, deliberately separate:
 //
-//   - Whatever is doing the work (FrameProcessor::run today; a video worker
-//     thread later) only ever writes to its own FrameProgress -- a couple of
+//   - Whatever is doing the work (FrameProcessor::run, on a FrameWorkerPool
+//     worker thread) only ever writes to its own FrameProgress -- a couple of
 //     relaxed atomics, no lock, no knowledge that anything is watching.
-//   - Renderer/Watcher here only ever read those atomics and draw. Nothing in
-//     this file is called from the thread doing the actual frame processing.
+//   - Renderer/runUntilDone here only ever read those atomics and draw.
+//     Nothing in this file runs on the thread doing the actual frame
+//     processing -- it runs on whichever thread is otherwise just waiting for
+//     that work to finish, which is the calling thread's own job either way.
 //
 // That split is what makes this the same system for a still image and a future
-// multithreaded video: a still image is one Line, drawn by a Watcher polling one
-// FrameProgress; video will be one Line per worker plus an aggregate line, drawn
-// by the same Watcher polling more of them. Nothing here has to change shape when
-// that lands -- only how many Lines get constructed.
+// multithreaded video: a still image is one Line, read from FrameWorkerPool's
+// one worker; video will be one Line per worker plus an aggregate line. Nothing
+// here changes shape when that lands -- only how many Lines get constructed and
+// what `isDone` checks.
 namespace ProgressDisplay {
 
 // One line's worth of state to render: whose progress this is (a still image's
@@ -50,29 +51,15 @@ class Renderer
     int m_linesDrawn = 0;
 };
 
-// Polls a fixed set of lines on its own thread and redraws them at a fixed
-// interval, so the thread doing the actual work never has to pause to report
-// itself. Starts polling on construction, stops and joins on destruction --
-// RAII, so a normal return or an early one both clean it up the same way.
-class Watcher
-{
-  public:
-    explicit Watcher(std::vector<Line> lines, int intervalMs = 80);
-    ~Watcher();
-
-    Watcher(const Watcher&) = delete;
-    Watcher& operator=(const Watcher&) = delete;
-
-    // Stops polling and draws one final frame -- call before reading whatever the
-    // watched work produced, so the terminal isn't still being written to by the
-    // background thread when the caller moves on.
-    void stop();
-
-  private:
-    std::vector<Line> m_lines;
-    Renderer m_renderer;
-    std::atomic<bool> m_running {true};
-    std::thread m_thread;
-};
+// Draws `lines` on a fixed interval until `isDone` returns true, entirely on
+// the CALLING thread -- this blocks the caller, which is the point: call it
+// from whichever thread is otherwise just sitting there waiting for the real
+// work to finish anyway (the main thread, while a FrameWorkerPool::Manager's
+// workers do the actual processing), so no thread beyond the workers
+// themselves has to exist for the bar to move. Draws one final frame and
+// erases before returning, so nothing stale is left on screen.
+void runUntilDone(
+    const std::function<bool()>& isDone, const std::vector<Line>& lines, int intervalMs = 80
+);
 
 }   // namespace ProgressDisplay

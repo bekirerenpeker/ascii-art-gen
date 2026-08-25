@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 
 namespace ProgressDisplay {
 
@@ -98,23 +99,15 @@ void Renderer::finish()
     m_linesDrawn = 0;
 }
 
-Watcher::Watcher(std::vector<Line> lines, int intervalMs) : m_lines(std::move(lines))
+void runUntilDone(const std::function<bool()>& isDone, const std::vector<Line>& lines, int intervalMs)
 {
-    m_thread = std::thread([this, intervalMs] {
-        while (m_running.load(std::memory_order_relaxed)) {
-            m_renderer.draw(m_lines);
-            std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
-        }
-    });
-}
-
-Watcher::~Watcher() { stop(); }
-
-void Watcher::stop()
-{
-    if (!m_running.exchange(false, std::memory_order_relaxed)) return;   // already stopped
-    if (m_thread.joinable()) m_thread.join();
-    m_renderer.finish();
+    Renderer renderer;
+    while (!isDone()) {
+        renderer.draw(lines);
+        std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+    }
+    renderer.draw(lines);
+    renderer.finish();
 }
 
 }   // namespace ProgressDisplay

@@ -2,10 +2,11 @@
 #include "core/Profiler.hpp"
 #include "Assets.hpp"
 #include "FrameProcessor.hpp"
+#include "FrameWorkerPool.hpp"
 #include "ProgressDisplay.hpp"
 #include "bitmap/Resample.hpp"
 #include "core/Charset.hpp"
-#include "core/FrameStorage.hpp"
+#include "core/FramePool.hpp"
 #include "dithering/Dithering.hpp"
 #include "edges/Edges.hpp"
 #include "file_management/ImageManager.hpp"
@@ -165,31 +166,18 @@ int run(const Options& opts)
 
     ASCIIGEN_PROFILE("run", "pipeline");
 
-    // FrameStorage is the same object a video worker thread will process a frame into
-    // later -- a still image is just the one-instance, one-call case of that. Loading
-    // fills `input`; everything else is FrameProcessor::run's job, then this function
-    // only decides what to do with `text`/`renderedImage` afterward, same as it always
-    // decided what to do with the locals those used to be.
-    FrameStorage frame;
-
-    // One Line today -- a still image is the whole picture. Video will construct
-    // this the same way, just with one Line per worker plus an aggregate; nothing
-    // about Renderer/Watcher itself changes shape when that lands. Starts polling
-    // immediately, stops (and does its own final draw + erase) via RAII on every
-    // return path below, including the early ones.
-    ProgressDisplay::Watcher watcher({{"frame", &frame.progress}});
-
-    frame.progress.set("loading", 0.f);
+    // Loaded before there's anywhere to put it -- resolveGridSize below needs the
+    // source's own dimensions, and the pool below needs the grid size to know how
+    // big to make each slot, so this has to come first regardless.
+    Image loadedInput;
     {
         ASCIIGEN_PROFILE("load", "io");
-        frame.input = ImageManager::loadImage(opts.input.path);
+        loadedInput = ImageManager::loadImage(opts.input.path);
     }
-    if (!frame.input.pixels) return 3;
-
-    frame.progress.set("setup", 0.02f);
+    if (!loadedInput.pixels) return 3;
 
     int cols = 0, rows = 0;
-    resolveGridSize(opts, frame.input, cols, rows);
+    resolveGridSize(opts, loadedInput, cols, rows);
 
     Charset charset;
     {
@@ -295,9 +283,14 @@ int run(const Options& opts)
         renderAtlas = GlyphAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
     }
 
-    // Sizes buffer/plane up front -- steady-state (a future video's second frame
-    // onward) allocates nothing new inside FrameProcessor::run.
-    frame.allocate(cols, rows, planeW, planeH);
+    // One slot, one call -- video will be `pool.allocate(workerCount + slack, ...)`
+    // with the same call, the same class, just a bigger number. Sizes every slot's
+    // buffer/plane up front (see FrameStorage::allocate), so steady-state (a
+    // future video's second frame onward) allocates nothing new inside
+    // FrameProcessor::run.
+    FramePool pool;
+    pool.allocate(1, cols, rows, planeW, planeH);
+    pool.slot(0).storage.input = std::move(loadedInput);
 
     // Built once, whichever one the algorithm actually needs -- both depend only on
     // matchAtlas and options that don't change frame to frame, so generate() no
@@ -332,12 +325,33 @@ int run(const Options& opts)
         );
     }
 
-    FrameProcessor::run(frame, opts, ctx);
+    // The actual frame processing runs on a worker thread -- one worker for a
+    // still image, workerCount for video later, identical Manager either way.
+    // Everything else (submission, progress display, waiting) stays right here
+    // on the main thread; only FrameProcessor::run itself ever leaves it.
+    pool.submit(0);
+    {
+        FrameWorkerPool::Manager manager(pool, opts, ctx, /*workerCount=*/1);
 
-    // Stopped explicitly, not left to the destructor, so its background thread is
-    // fully joined before anything below writes to the same stdout -- otherwise
-    // the watcher's next redraw could land mid-write of the ASCII art itself.
-    watcher.stop();
+        // Blocks THIS thread, not a new one -- see ProgressDisplay.hpp's note on
+        // why that's correct now that the work being watched already left the
+        // main thread. Reads pool.slot(0) directly rather than the `frame`
+        // reference below, since that reference isn't declared until the
+        // worker's result is guaranteed ready.
+        ProgressDisplay::runUntilDone(
+            [&] { return pool.allDone(); }, {{"frame", &pool.slot(0).storage.progress}}
+        );
+
+        // Explicit, not left to the Manager destructor, purely for thread
+        // hygiene: the worker's acquire/release pair on `state` already
+        // guarantees everything it wrote to `slot.storage` is visible once
+        // allDone() reads true, so this isn't needed for correctness -- it's
+        // here so the worker thread itself is fully wound down before this
+        // scope ends rather than sitting joined-on-exit.
+        manager.join();
+    }
+
+    FrameStorage& frame = pool.slot(0).storage;
 
     if (opts.output.stdoutEnabled) {
         Terminal::enableAnsi();
