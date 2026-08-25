@@ -64,6 +64,17 @@ else()
     target_compile_options(asciigen_cli PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
 endif()
 
+# FFmpeg is linked as shared libraries (lib/ffmpeg/CMakeLists.txt explains why static
+# wasn't an option), so the DLLs/.so files have to physically sit next to the built
+# binary -- a POST_BUILD step, not a link setting, since nothing about linking an
+# import library places the DLL itself anywhere.
+if(FFMPEG_RUNTIME_FILES)
+    add_custom_command(TARGET asciigen_cli POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${FFMPEG_RUNTIME_FILES} "$<TARGET_FILE_DIR:asciigen_cli>"
+        COMMENT "Copying FFmpeg runtime libraries next to asciigen_cli")
+endif()
+
 # Installation. Nothing here runs during a build -- `cmake --install <builddir>`
 # is the only thing that triggers it, which is what makes installing explicit.
 #
@@ -77,6 +88,10 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS asciigen_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+if(FFMPEG_RUNTIME_FILES)
+    install(FILES ${FFMPEG_RUNTIME_FILES} DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 install(
     DIRECTORY "${CMAKE_SOURCE_DIR}/assets/help" "${CMAKE_SOURCE_DIR}/assets/fonts"

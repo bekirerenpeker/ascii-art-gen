@@ -1,7 +1,5 @@
 #include "core/Profiler.hpp"
 #include "bitmap/Bitmask.hpp"
-#include "bitmap/Resample.hpp"
-#include "dithering/Dithering.hpp"
 #include "filters/ImageFilters.hpp"
 #include <algorithm>
 #include <cmath>
@@ -12,8 +10,95 @@ namespace Bitmask {
 
 static float luma(const RGB& c) { return 0.299f * c.r + 0.587f * c.g + 0.114f * c.b; }
 
+void buildModel(const GlyphAtlas& atlas, const BitmaskOptions& opts, Model& out)
+{
+    const int cellPx = atlas.glpyhSize();
+    const int atlasW = atlas.cellWidth();
+    const int atlasH = atlas.cellHeight();
+    const int glyphCount = atlas.glyphCount();
+    out.glyphCount = glyphCount;
+
+    if (cellPx <= 0 || glyphCount <= 0) return;
+    ASCIIGEN_PROFILE("Bitmask::buildModel", "select");
+
+
+    // Coverage is used as a weight rather than thresholded to 1-bit: downsampled
+    // antialiased glyphs peak well below 255, so any fixed cutoff throws most of
+    // the shape away.
+    //
+    // B2: maskF is the same masks as floats, built once here instead of a byte
+    // load + /255.f on every pixel, per glyph, per cell in the loop below (the
+    // main cost this glyph-scoring pass has).
+    out.inkWeight.assign(glyphCount, 0.f);
+    std::vector<float> inkWeightSq(glyphCount, 0.f);
+    out.maskF.assign((size_t)glyphCount * (size_t)cellPx, 0.f);
+    float maxCoverage = 0.f;
+    for (int g = 0; g < glyphCount; g++) {
+        const uint8_t* mask = atlas.getGlyphBegin(g);
+        float* mf = out.maskF.data() + (size_t)g * (size_t)cellPx;
+        for (int i = 0; i < cellPx; i++) {
+            const float a = mask[i] / 255.f;
+            mf[i] = a;
+            out.inkWeight[g] += a;
+            inkWeightSq[g] += a * a;
+        }
+        maxCoverage = std::max(maxCoverage, out.inkWeight[g] / cellPx);
+    }
+
+    // Glyphs only ink part of their cell and antialiasing dims them further, so
+    // the densest one still averages well under full coverage. Brightness has to
+    // be scaled into that real range or everything above it saturates onto the
+    // single heaviest glyph.
+    out.maxCoverage = maxCoverage > 0.f ? maxCoverage : 1.f;
+
+    // B1: wMean and wStd depend only on g, not on the cell being scored, but sat
+    // inside the per-cell glyph loop below regardless -- 45,700 redundant
+    // recomputations of the same value per glyph, including a sqrt each. Built
+    // once here alongside inkWeight instead.
+    out.wMeanByGlyph.assign(glyphCount, 0.f);
+    out.wStdByGlyph.assign(glyphCount, 0.f);
+    for (int g = 0; g < glyphCount; g++) {
+        const float wMean = out.inkWeight[g] / cellPx;
+        out.wMeanByGlyph[g] = wMean;
+        out.wStdByGlyph[g] = std::sqrt(std::max(0.f, inkWeightSq[g] - cellPx * wMean * wMean));
+    }
+
+    // Blurred twin of every glyph mask, built once. Matching these instead of the
+    // raw masks is what buys misalignment tolerance: a stroke a pixel off still
+    // overlaps, where the sharp masks would score it as a total miss.
+    out.soft = opts.softness > 0.f && !opts.allowBackground;
+    out.blurMask.clear();
+    out.blurMaskMean.assign(glyphCount, 0.f);
+    out.blurMaskStd.assign(glyphCount, 0.f);
+
+    // F2: blur's own internal scratch buffer, reused across every glyph below
+    // instead of allocated fresh each time. Model-local: only buildModel needs it,
+    // never generate() itself.
+    std::vector<float> blurScratch;
+
+    if (out.soft) {
+        out.blurMask.assign((size_t)glyphCount * (size_t)cellPx, 0.f);
+
+        for (int g = 0; g < glyphCount; g++) {
+            // B2: maskF already holds this glyph's mask as floats -- no need
+            // for a second, separate conversion here.
+            const float* sharp = out.maskF.data() + (size_t)g * (size_t)cellPx;
+            float* dst = out.blurMask.data() + (size_t)g * (size_t)cellPx;
+            ImageFilters::blur(sharp, dst, atlasW, atlasH, opts.blurRadius, blurScratch);
+
+            float sum = 0.f, sumSq = 0.f;
+            for (int i = 0; i < cellPx; i++) sum += dst[i], sumSq += dst[i] * dst[i];
+
+            out.blurMaskMean[g] = sum / cellPx;
+            out.blurMaskStd[g] =
+                std::sqrt(std::max(0.f, sumSq - cellPx * out.blurMaskMean[g] * out.blurMaskMean[g]));
+        }
+    }
+}
+
 void generate(
-    const Image& image, CellBuffer& outBuffer, const GlyphAtlas& atlas, BitmaskOptions opts
+    const Image& image, CellBuffer& outBuffer, const GlyphAtlas& atlas, const Model& model,
+    Scratch& scratch, BitmaskOptions opts
 )
 {
     const int cellPx = atlas.glpyhSize();
@@ -25,96 +110,32 @@ void generate(
     ASCIIGEN_PROFILE("Bitmask::generate", "select");
 
 
-    // Coverage is used as a weight rather than thresholded to 1-bit: downsampled
-    // antialiased glyphs peak well below 255, so any fixed cutoff throws most of
-    // the shape away.
-    //
-    // B2: maskF is the same masks as floats, built once here instead of a byte
-    // load + /255.f on every pixel, per glyph, per cell in the loop below (the
-    // main cost this glyph-scoring pass has).
-    std::vector<float> inkWeight(glyphCount, 0.f);
-    std::vector<float> inkWeightSq(glyphCount, 0.f);
-    std::vector<float> maskF((size_t)glyphCount * (size_t)cellPx);
-    float maxCoverage = 0.f;
-    for (int g = 0; g < glyphCount; g++) {
-        const uint8_t* mask = atlas.getGlyphBegin(g);
-        float* mf = maskF.data() + (size_t)g * (size_t)cellPx;
-        for (int i = 0; i < cellPx; i++) {
-            const float a = mask[i] / 255.f;
-            mf[i] = a;
-            inkWeight[g] += a;
-            inkWeightSq[g] += a * a;
-        }
-        maxCoverage = std::max(maxCoverage, inkWeight[g] / cellPx);
-    }
+    const std::vector<float>& inkWeight = model.inkWeight;
+    const std::vector<float>& maskF = model.maskF;
+    const std::vector<float>& wMeanByGlyph = model.wMeanByGlyph;
+    const std::vector<float>& wStdByGlyph = model.wStdByGlyph;
+    const std::vector<float>& blurMask = model.blurMask;
+    const std::vector<float>& blurMaskMean = model.blurMaskMean;
+    const std::vector<float>& blurMaskStd = model.blurMaskStd;
+    const float maxCoverage = model.maxCoverage;
+    const bool soft = model.soft;
 
-    // Glyphs only ink part of their cell and antialiasing dims them further, so
-    // the densest one still averages well under full coverage. Brightness has to
-    // be scaled into that real range or everything above it saturates onto the
-    // single heaviest glyph.
-    if (maxCoverage <= 0.f) maxCoverage = 1.f;
-
-    // B1: wMean and wStd depend only on g, not on the cell being scored, but sat
-    // inside the per-cell glyph loop below regardless -- 45,700 redundant
-    // recomputations of the same value per glyph, including a sqrt each. Built
-    // once here alongside inkWeight instead.
-    std::vector<float> wMeanByGlyph(glyphCount, 0.f);
-    std::vector<float> wStdByGlyph(glyphCount, 0.f);
-    for (int g = 0; g < glyphCount; g++) {
-        const float wMean = inkWeight[g] / cellPx;
-        wMeanByGlyph[g] = wMean;
-        wStdByGlyph[g] = std::sqrt(std::max(0.f, inkWeightSq[g] - cellPx * wMean * wMean));
-    }
-
-    // Blurred twin of every glyph mask, built once. Matching these instead of the
-    // raw masks is what buys misalignment tolerance: a stroke a pixel off still
-    // overlaps, where the sharp masks would score it as a total miss.
-    const bool soft = opts.softness > 0.f && !opts.allowBackground;
-    std::vector<float> blurMask;
-    std::vector<float> blurMaskMean(glyphCount, 0.f);
-    std::vector<float> blurMaskStd(glyphCount, 0.f);
-
-    // F2: blur's own internal scratch buffer, reused across every call below
-    // (once per glyph here, once per cell further down) instead of allocated
-    // fresh each time.
-    std::vector<float> blurScratch;
-
-    if (soft) {
-        blurMask.resize((size_t)glyphCount * (size_t)cellPx);
-
-        for (int g = 0; g < glyphCount; g++) {
-            // B2: maskF already holds this glyph's mask as floats -- no need
-            // for a second, separate conversion here.
-            const float* sharp = maskF.data() + (size_t)g * (size_t)cellPx;
-            float* dst = blurMask.data() + (size_t)g * (size_t)cellPx;
-            ImageFilters::blur(sharp, dst, atlasW, atlasH, opts.blurRadius, blurScratch);
-
-            float sum = 0.f, sumSq = 0.f;
-            for (int i = 0; i < cellPx; i++) sum += dst[i], sumSq += dst[i] * dst[i];
-
-            blurMaskMean[g] = sum / cellPx;
-            blurMaskStd[g] =
-                std::sqrt(std::max(0.f, sumSq - cellPx * blurMaskMean[g] * blurMaskMean[g]));
-        }
-    }
-
-    // One resample for the whole frame at atlas resolution, then dither it: the
-    // plane is where tones actually get quantised down to glyph coverages.
-    Image plane;
-    Resample::toGrid(
-        image, plane, outBuffer.width() * atlasW, outBuffer.height() * atlasH, opts.resampleFilter
-    );
-    Dithering::apply(plane, atlasW, atlasH);
-
-    std::vector<RGB> tile(cellPx);
-    std::vector<float> tileLuma(cellPx);
-    std::vector<float> blurLuma(soft ? cellPx : 0);
+    // `image` is already resampled to exactly this grid AND dithered -- both are
+    // the caller's job now (once, for whichever algorithm actually runs), not
+    // this function's (every call). See Bitmask.hpp's note on generate().
+    std::vector<RGB>& tile = scratch.tile;
+    std::vector<float>& tileLuma = scratch.tileLuma;
+    std::vector<float>& blurLuma = scratch.blurLuma;
+    std::vector<float>& blurScratch = scratch.blurScratch;
+    tile.resize(cellPx);
+    tileLuma.resize(cellPx);
+    blurLuma.resize(soft ? cellPx : 0);
 
     // toGrid always hands back a 3-channel plane sized exactly to the grid, so
     // the tile gather can walk it directly instead of bounds-checking and
     // re-branching on depth once per subpixel.
-    const byte* const planePx = plane.pixels;
-    const size_t planeStride = (size_t)plane.width * 3;
+    const byte* const planePx = image.pixels;
+    const size_t planeStride = (size_t)image.width * 3;
 
     for (int cy = 0; cy < outBuffer.height(); cy++) {
         for (int cx = 0; cx < outBuffer.width(); cx++) {

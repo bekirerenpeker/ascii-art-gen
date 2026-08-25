@@ -1,9 +1,10 @@
 #pragma once
 
-#include "bitmap/Resample.hpp"
 #include "core/CellBuffer.hpp"
+#include "core/Color.hpp"
 #include "core/Image.hpp"
 #include "font/GlyphAtlas.hpp"
+#include <vector>
 
 namespace Bitmask {
 
@@ -29,13 +30,55 @@ struct BitmaskOptions
 
     // Blur radius in cell pixels, i.e. how far a stroke may drift and still match.
     int blurRadius = 1;
-
-    // Which filter builds the plane this all works from. See Resample.hpp.
-    Resample::Filter resampleFilter = Resample::Filter::Auto;
 };
 
+// Every glyph-atlas-derived fact generate() needs that never changes while a
+// frame is being built: ink weight and coverage stats per glyph, the float masks
+// (B2), and -- only when softness > 0 -- their blurred twins (see Bitmask.cpp).
+//
+// Depends only on `atlas` and the handful of `opts` fields noted below, all of
+// which are the same for every frame of a video -- callers build this ONCE
+// (alongside the atlas itself) and reuse it across every call to generate(),
+// rather than paying to rebuild it per frame. A still image still only builds
+// it once, so this changes nothing there.
+struct Model
+{
+    int glyphCount = 0;
+    std::vector<float> inkWeight;
+    std::vector<float> maskF;   // glyphCount * cellPx
+    std::vector<float> wMeanByGlyph;
+    std::vector<float> wStdByGlyph;
+    float maxCoverage = 1.f;
+
+    // Built only when softness > 0 && !allowBackground -- see BitmaskOptions::softness.
+    bool soft = false;
+    std::vector<float> blurMask;   // glyphCount * cellPx, empty if !soft
+    std::vector<float> blurMaskMean;
+    std::vector<float> blurMaskStd;
+};
+
+void buildModel(const GlyphAtlas& atlas, const BitmaskOptions& opts, Model& out);
+
+// Every per-cell working buffer generate() needs that would otherwise be a fresh
+// local -- reused across frames instead of allocated per call. Contents don't
+// need to survive between calls, only the storage does.
+struct Scratch
+{
+    std::vector<RGB> tile;
+    std::vector<float> tileLuma;
+    std::vector<float> blurLuma;
+    std::vector<float> blurScratch;   // ImageFilters::blur's own scratch, reused through it
+};
+
+// `image` must already be exactly `outBuffer.width() * atlas.cellWidth()` x
+// `outBuffer.height() * atlas.cellHeight()`, resampled AND dithered -- generate()
+// used to do both itself, internally, on every call, which for a caller that
+// already needed to know the plane's size to build one (every real caller) meant
+// resampling an already-correctly-sized plane to its own size a second time.
+// That's the caller's job now, once, not this function's, every call.
 void generate(
-    const Image& image, CellBuffer& outBuffer, const GlyphAtlas& atlas, BitmaskOptions opts = {}
+    const Image& image, CellBuffer& outBuffer, const GlyphAtlas& atlas, const Model& model,
+    Scratch& scratch, BitmaskOptions opts = {}
 );
 
 };   // namespace Bitmask

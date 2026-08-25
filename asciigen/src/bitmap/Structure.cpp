@@ -1,8 +1,6 @@
 #include "core/Profiler.hpp"
 #include "bitmap/Structure.hpp"
 #include "bitmap/DescriptorBasis.hpp"
-#include "bitmap/Resample.hpp"
-#include "dithering/Dithering.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -43,41 +41,7 @@ static constexpr int kMassFastSize = 2;
 // real tone difference.
 static constexpr float kOffCenterWeight = 0.5f;
 
-// Per-glyph facts that never change while a frame is being built: how much ink
-// the glyph carries, what shape that ink makes, and (S1) that shape packed
-// glyph-contiguous rather than as N separate heap vectors, plus (S2) a cheap
-// subspace to bound a glyph's score against before paying for its real one.
-struct GlyphModel
-{
-    std::vector<float> inkWeight;
-    float maxCoverage = 1.f;
-
-    int oriLen = 0;
-    int massLen = 0;
-    std::vector<float> oriMatrix;    // glyphCount x oriLen, row-major
-    std::vector<float> massMatrix;   // glyphCount x massLen, row-major
-
-    DescriptorBasis oriBasis;
-    DescriptorBasis massBasis;
-    std::vector<float> oriCoeffs;      // glyphCount x oriBasis.k
-    std::vector<float> massCoeffs;     // glyphCount x massBasis.k
-    std::vector<float> oriResidNorm;   // glyphCount, full kOriBasisSize bound
-    std::vector<float> massResidNorm;  // glyphCount, full kMassBasisSize bound
-
-    // el-1: residual for the cheap cascade tier, using only the first
-    // kOriFastSize/kMassFastSize of the same coefficients above.
-    std::vector<float> oriResidNormFast;   // glyphCount
-    std::vector<float> massResidNormFast;  // glyphCount
-
-    // Flat-tile path: how far each glyph's ink centroid sits from the cell's
-    // own geometric centre, normalised by half the cell diagonal (so it's
-    // roughly 0..1 regardless of cell size) -- and the same glyph indices
-    // sorted by inkWeight, for the binary search in pickGlyphFlat.
-    std::vector<float> offCenter;   // glyphCount
-    std::vector<int> inkOrder;      // glyphCount, indices into the arrays above
-};
-
-static void buildGlyphModel(const GlyphAtlas& atlas, DescriptorShape shape, GlyphModel& out)
+void buildGlyphModel(const GlyphAtlas& atlas, DescriptorShape shape, GlyphModel& out)
 {
     const int cellPx = atlas.glpyhSize();
     const int glyphCount = atlas.glyphCount();
@@ -451,7 +415,8 @@ static int pickGlyph(
 }
 
 void generate(
-    const Image& image, CellBuffer& outBuffer, const GlyphAtlas& atlas, StructureOptions opts
+    const Image& image, CellBuffer& outBuffer, const GlyphAtlas& atlas, const GlyphModel& model,
+    Scratch& scratch, StructureOptions opts
 )
 {
     const int cellPx = atlas.glpyhSize();
@@ -463,26 +428,22 @@ void generate(
     ASCIIGEN_PROFILE("Structure::generate", "select");
 
 
-    GlyphModel model;
-    buildGlyphModel(atlas, opts.shape, model);
+    // `image` is already resampled to exactly this grid AND dithered -- both are
+    // the caller's job now (once, for whichever algorithm actually runs), not
+    // this function's (every call). See Structure.hpp's note on generate().
+    std::vector<RGB>& tile = scratch.tile;
+    std::vector<float>& tileLuma = scratch.tileLuma;
+    Descriptor& tileDesc = scratch.tileDesc;
+    tile.resize(cellPx);
+    tileLuma.resize(cellPx);
 
-    // Same plane every selector works from: one resample at atlas resolution,
-    // then dithered at cell granularity, since that is the unit being quantised.
-    Image plane;
-    Resample::toGrid(
-        image, plane, outBuffer.width() * atlasW, outBuffer.height() * atlasH, opts.resampleFilter
-    );
-    Dithering::apply(plane, atlasW, atlasH);
-
-    std::vector<RGB> tile(cellPx);
-    std::vector<float> tileLuma(cellPx);
-    Descriptor tileDesc;
-
-    // Scratch for S2's projection, sized once from the model built above and
-    // reused every cell -- pickGlyph only ever overwrites it.
-    std::vector<float> tileOriCoeffs(model.oriBasis.k);
-    std::vector<float> tileMassCoeffs(model.massBasis.k);
-    std::vector<int> massCounts;   // T2: reused every cell, same as buildGlyphModel above
+    // Scratch for S2's projection, sized from the model passed in and reused
+    // every cell -- pickGlyph only ever overwrites it.
+    std::vector<float>& tileOriCoeffs = scratch.tileOriCoeffs;
+    std::vector<float>& tileMassCoeffs = scratch.tileMassCoeffs;
+    tileOriCoeffs.resize(model.oriBasis.k);
+    tileMassCoeffs.resize(model.massBasis.k);
+    std::vector<int>& massCounts = scratch.massCounts;   // T2: reused every cell
 
     // How much of S2's shortlist is actually pruning, and how many cells took
     // the flat-tile path, for the trace -- see generate()'s Profiler::describe
@@ -495,8 +456,8 @@ void generate(
     // See Bitmask.cpp: the plane is always 3-channel and exactly grid-sized, so
     // the gather walks a row pointer rather than paying getAt's per-subpixel
     // bounds check and depth branch.
-    const byte* const planePx = plane.pixels;
-    const size_t planeStride = (size_t)plane.width * 3;
+    const byte* const planePx = image.pixels;
+    const size_t planeStride = (size_t)image.width * 3;
 
     for (int cy = 0; cy < outBuffer.height(); cy++) {
         for (int cx = 0; cx < outBuffer.width(); cx++) {

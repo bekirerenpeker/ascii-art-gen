@@ -14,7 +14,8 @@ static constexpr float kMaxResponse = 16.f * 255.f;
 // thing from resampling alpha itself.
 static void resampleAlpha(const Image& alpha, Image& outPlane, int outW, int outH)
 {
-    outPlane = Image(outW, outH, 1);
+    if (outPlane.width != outW || outPlane.height != outH || outPlane.depth != 1)
+        outPlane = Image(outW, outH, 1);
     if (!alpha.pixels || outW <= 0 || outH <= 0) return;
 
     const float scaleX = alpha.width / (float)outW;
@@ -50,7 +51,9 @@ static float alphaAt(const Image& plane, int x, int y)
     return plane.pixels[x + y * plane.width];
 }
 
-void detectAlphaOutline(const Image& alpha, int cols, int rows, int subsamples, EdgeField& out)
+void detectAlphaOutline(
+    const Image& alpha, int cols, int rows, int subsamples, EdgeField& out, Image& planeScratch
+)
 {
     const int sub = std::max(1, subsamples);
     const int planeW = cols * sub;
@@ -64,8 +67,8 @@ void detectAlphaOutline(const Image& alpha, int cols, int rows, int subsamples, 
 
     if (!alpha.pixels || cols <= 0 || rows <= 0) return;
 
-    Image plane;
-    resampleAlpha(alpha, plane, planeW, planeH);
+    resampleAlpha(alpha, planeScratch, planeW, planeH);
+    const Image& plane = planeScratch;
 
     // Same non-square-pixel correction as Scharr: a plane sample covers a
     // roughly 1:2 footprint of the source, so raw gradients read angles off a

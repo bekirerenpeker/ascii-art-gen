@@ -19,6 +19,9 @@ target_link_libraries(asciigen PUBLIC stb)
 # FreeType's headers visible too. Linking the `freetype` target also pulls in
 # its include directories automatically -- no separate include path to add.
 target_link_libraries(asciigen PUBLIC freetype)
+# Same reasoning again: video loading/saving will store libav*/libsw* handles in
+# public headers under file_management/, so the include path has to be public too.
+target_link_libraries(asciigen PUBLIC ffmpeg)
 
 # Compiles every ASCIIGEN_PROFILE scope out when OFF, so a build without it
 # carries no timing code at all. PUBLIC because app/ uses the same macros and

@@ -1,19 +1,14 @@
 #include "Pipeline.hpp"
 #include "core/Profiler.hpp"
 #include "Assets.hpp"
+#include "FrameProcessor.hpp"
 #include "bitmap/Resample.hpp"
-#include "bitmap/Bitmask.hpp"
-#include "bitmap/Ramp.hpp"
-#include "bitmap/Structure.hpp"
-#include "core/CellBuffer.hpp"
 #include "core/Charset.hpp"
+#include "core/FrameStorage.hpp"
 #include "dithering/Dithering.hpp"
 #include "edges/Edges.hpp"
 #include "file_management/ImageManager.hpp"
 #include "file_management/OutputManager.hpp"
-#include "filters/CellFilters.hpp"
-#include "filters/ImageFilters.hpp"
-#include "filters/Palettes.hpp"
 #include "font/Font.hpp"
 #include "font/GlyphAtlas.hpp"
 #include "output/AnsiRenderer.hpp"
@@ -133,35 +128,6 @@ bool wantsImage(const Options& opts)
     return false;
 }
 
-ImageRenderer::Fit toFit(ImageFit f)
-{
-    switch (f) {
-    case ImageFit::None: return ImageRenderer::Fit::None;
-    case ImageFit::Width: return ImageRenderer::Fit::Width;
-    case ImageFit::Height: return ImageRenderer::Fit::Height;
-    case ImageFit::Cover: return ImageRenderer::Fit::Cover;
-    case ImageFit::Stretch: return ImageRenderer::Fit::Stretch;
-    case ImageFit::Contain: break;
-    }
-    return ImageRenderer::Fit::Contain;
-}
-
-ImageRenderer::Align toAlign(ImageAlign a)
-{
-    switch (a) {
-    case ImageAlign::TopLeft: return ImageRenderer::Align::TopLeft;
-    case ImageAlign::Top: return ImageRenderer::Align::Top;
-    case ImageAlign::TopRight: return ImageRenderer::Align::TopRight;
-    case ImageAlign::Left: return ImageRenderer::Align::Left;
-    case ImageAlign::Right: return ImageRenderer::Align::Right;
-    case ImageAlign::BottomLeft: return ImageRenderer::Align::BottomLeft;
-    case ImageAlign::Bottom: return ImageRenderer::Align::Bottom;
-    case ImageAlign::BottomRight: return ImageRenderer::Align::BottomRight;
-    case ImageAlign::Center: break;
-    }
-    return ImageRenderer::Align::Center;
-}
-
 // How many genuinely different shapes the atlas holds. Counting inked glyphs is
 // not enough: a font missing a codepoint hands back .notdef, which in most faces
 // is a box outline and therefore very much inked. Every glyph then rasterises to
@@ -190,16 +156,6 @@ int distinctGlyphCount(const GlyphAtlas& atlas)
     return (int)shapes.size();
 }
 
-AnsiRenderer::ColorDepth toDepth(ColorMode c)
-{
-    switch (c) {
-    case ColorMode::Ansi16: return AnsiRenderer::ColorDepth::Ansi16;
-    case ColorMode::None: return AnsiRenderer::ColorDepth::None;
-    case ColorMode::TrueColor: break;
-    }
-    return AnsiRenderer::ColorDepth::TrueColor;
-}
-
 }   // namespace
 
 int run(const Options& opts)
@@ -208,45 +164,26 @@ int run(const Options& opts)
 
     ASCIIGEN_PROFILE("run", "pipeline");
 
-    Image img;
+    // FrameStorage is the same object a video worker thread will process a frame into
+    // later -- a still image is just the one-instance, one-call case of that. Loading
+    // fills `input`; everything else is FrameProcessor::run's job, then this function
+    // only decides what to do with `text`/`renderedImage` afterward, same as it always
+    // decided what to do with the locals those used to be.
+    FrameStorage frame;
     {
         ASCIIGEN_PROFILE("load", "io");
-        img = ImageManager::loadImage(opts.input.path);
+        frame.input = ImageManager::loadImage(opts.input.path);
     }
-    if (!img.pixels) return 3;
-
-    // Extracted before anything downstream can touch img: the resample for
-    // filters below always produces a 3-channel plane, so this is the only
-    // point where the source's own alpha channel still exists.
-    Image alphaSource;
-    if (opts.edge.alphaOutline) {
-        if (img.depth == 4 || img.depth == 2) {
-            alphaSource = Image(img.width, img.height, 1);
-
-            const int d = img.depth;
-            const byte* src = img.pixels + (d - 1);
-            byte* dst = alphaSource.pixels;
-            const size_t n = (size_t)img.width * (size_t)img.height;
-
-            for (size_t i = 0; i < n; i++, src += d, dst++) *dst = *src;
-        }
-        else {
-            std::cerr << "asciigen: --edge-alpha requested but the source has no alpha "
-                         "channel; skipped.\n";
-        }
-    }
+    if (!frame.input.pixels) return 3;
 
     int cols = 0, rows = 0;
-    resolveGridSize(opts, img, cols, rows);
+    resolveGridSize(opts, frame.input, cols, rows);
 
     Charset charset;
     {
         ASCIIGEN_PROFILE("buildCharset", "font");
         charset = buildCharset(opts);
     }
-
-    CellBuffer buffer;
-    buffer.setSize(cols, rows);
 
     Dithering::options = {
         .enabled = opts.dither.name != DitherName::None,
@@ -323,147 +260,14 @@ int run(const Options& opts)
     else if (opts.algo.resampleFilter == ResampleFilterName::Triangle)
         resampleFilter = Resample::Filter::Triangle;
 
-    auto doResample = [&]() {
-        ASCIIGEN_PROFILE("resample for filters", "resample");
-        Image plane;
-        Resample::toGrid(img, plane, planeW, planeH, resampleFilter);
-        img = std::move(plane);
-    };
-
-    auto doFilters = [&]() {
-        ASCIIGEN_PROFILE("source filters", "filter");
-
-        if (opts.source.autoLevels)
-            ImageFilters::autoLevels(img, opts.source.autoLevelsLow, opts.source.autoLevelsHigh);
-        if (opts.source.levels)
-            ImageFilters::levels(
-                img, opts.source.levelsBlack, opts.source.levelsWhite, opts.source.levelsGamma
-            );
-        if (opts.source.contrast != 1.f) ImageFilters::contrast(img, opts.source.contrast);
-        if (opts.source.blurRadius > 0) ImageFilters::blur(img, opts.source.blurRadius);
-        if (opts.source.sharpenAmount > 0.f)
-            ImageFilters::unsharpMask(img, opts.source.sharpenAmount, opts.source.sharpenRadius);
-    };
-
-    // Whichever side has fewer pixels goes first. A source bigger than the
-    // plane (the common case) gets resampled down before filtering -- most of
-    // it would be smoothed away regardless, so filtering it in full is wasted
-    // work, and sharpening in particular is largely undone by the later
-    // averaging. A source smaller than the plane -- easy to hit at a large
-    // --grid-height, since the plane's size follows grid size, not the
-    // source's -- gets filtered first instead: resampling it up before
-    // filtering would mean filtering mostly-interpolated pixels the resample
-    // just invented, for no real detail gained. This is a genuinely different
-    // operation on different pixels either way, not just a speed choice --
-    // see optimizations.md's "plane is upsampled" entry.
-    if ((size_t)img.width * (size_t)img.height < (size_t)planeW * (size_t)planeH) {
-        doFilters();
-        doResample();
-    }
-    else {
-        doResample();
-        doFilters();
-    }
-
-
-    switch (opts.algo.name) {
-    case AlgoName::Ramp:
-        Ramp::generate(img, buffer, charset, opts.algo.rampChars, resampleFilter);
-        break;
-
-    case AlgoName::Bitmask:
-        Bitmask::generate(
-            img, buffer, matchAtlas,
-            {.allowBackground = opts.algo.allowBackground,
-             .brightnessGamma = opts.algo.brightnessGamma,
-             .softness = opts.algo.bitmaskSoftness,
-             .blurRadius = opts.algo.bitmaskBlurRadius,
-             .resampleFilter = resampleFilter}
-        );
-        break;
-
-    case AlgoName::Structure:
-        Structure::generate(
-            img, buffer, matchAtlas,
-            {.shape = {.orientBlocksX = opts.algo.structureOrientBlocksX,
-                       .orientBlocksY = opts.algo.structureOrientBlocksY,
-                       .bins = opts.algo.structureBins,
-                       .massBlocksX = opts.algo.structureMassBlocksX,
-                       .massBlocksY = opts.algo.structureMassBlocksY},
-             .orientationWeight = opts.algo.structureOrientationWeight,
-             .massWeight = opts.algo.structureMassWeight,
-             .toneWeight = opts.algo.structureToneWeight,
-             .allowBackground = opts.algo.allowBackground,
-             .brightnessGamma = opts.algo.brightnessGamma,
-             .gradientStride = opts.algo.structureGradientStride,
-             .fastAtan = opts.algo.structureFastAtan,
-             .flatThreshold = opts.algo.structureFlatThreshold,
-             .resampleFilter = resampleFilter}
-        );
-        break;
-    }
-
-    // May append the directional glyphs, so anything rasterised from the charset
-    // has to come after this.
-    {
-        ASCIIGEN_PROFILE("edges", "edges");
-        Edges::apply(img, buffer, charset, alphaSource);
-    }
-
-    {
-        ASCIIGEN_PROFILE("cell filters", "filter");
-
-        if (opts.grid.despeckle > 0.f)
-            CellFilters::despeckle(buffer, matchAtlas, opts.grid.despeckle);
-
-        if (opts.grid.brightness != 1.f || opts.grid.gamma != 1.f)
-            CellFilters::brightness(buffer, opts.grid.brightness, opts.grid.gamma);
-        if (opts.grid.vibrance != 0.f) CellFilters::vibrance(buffer, opts.grid.vibrance);
-
-        if (opts.grid.palette == PaletteName::Gruvbox)
-            CellFilters::paletteMap(buffer, Palettes::gruvbox(), opts.grid.paletteStrength);
-        else if (opts.grid.palette == PaletteName::Nord)
-            CellFilters::paletteMap(buffer, Palettes::nord(), opts.grid.paletteStrength);
-    }
-
-    // Last, so the colour filters cannot shift the chosen backdrop, and so cells
-    // blanked by despeckle carry it too rather than punching black holes.
-    RGB backdrop {0, 0, 0};
-    if (opts.backdrop.mode == BackdropMode::Auto)
-        backdrop = buffer.suggestedBackground(opts.backdrop.darken, opts.backdrop.lumaThreshold);
-    else if (opts.backdrop.mode == BackdropMode::Fixed) backdrop = opts.backdrop.color;
-
-    // Not when the selector solved a background per cell. Painting one colour
-    // over all of them throws that second colour away and leaves the backdrop
-    // showing through wherever a glyph does not cover -- which reads as a dark
-    // seam between every pair of blocks. The backdrop is still what pads the
-    // picture; it just has no business inside the grid here.
-    //
-    // Transparent needs no fill at all -- the ANSI renderer is about to skip
-    // the background escape entirely, so whatever colour sat in the buffer
-    // would never be seen anyway.
-    if (opts.backdrop.mode != BackdropMode::None && opts.backdrop.mode != BackdropMode::Transparent
-        && !opts.algo.allowBackground)
-        buffer.fillBackground(backdrop);
-
-    const std::string text = AnsiRenderer::render(
-        buffer, charset,
-        {.depth = toDepth(opts.output.color),
-         .transparentBackground = opts.backdrop.mode == BackdropMode::Transparent}
-    );
-
-    if (opts.output.stdoutEnabled) {
-        Terminal::enableAnsi();
-        Terminal::enableUtf8();
-        std::cout << text;
-    }
-
-    if (opts.output.paths.empty()) return 0;
-
     ImageManager::setPngCompression(opts.output.pngCompression);
 
+    // Built once, same as matchAtlas above -- an image-format output shares one render
+    // regardless of how many paths ask for one (renderToSize used to run again per path;
+    // now FrameProcessor::run does it exactly once, into frame.renderedImage below).
     GlyphAtlas renderAtlas;
-    if (wantsImage(opts)) {
+    const bool needsImage = wantsImage(opts);
+    if (needsImage) {
         // With no target size the natural render IS the file, so this number is
         // the glyph size you actually get. 16 is what a terminal draws at, but a
         // terminal hints its stems onto the pixel grid and we do not -- at 8x16
@@ -479,6 +283,53 @@ int run(const Options& opts)
         renderAtlas = GlyphAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
     }
 
+    // Sizes buffer/plane up front -- steady-state (a future video's second frame
+    // onward) allocates nothing new inside FrameProcessor::run.
+    frame.allocate(cols, rows, planeW, planeH);
+
+    // Built once, whichever one the algorithm actually needs -- both depend only on
+    // matchAtlas and options that don't change frame to frame, so generate() no
+    // longer rebuilds its own copy of this on every call the way it used to.
+    FrameProcessor::Context ctx {
+        .font = &font,
+        .charset = &charset,
+        .matchAtlas = &matchAtlas,
+        .renderAtlas = needsImage ? &renderAtlas : nullptr,
+        .resampleFilter = resampleFilter,
+        .planeW = planeW,
+        .planeH = planeH,
+    };
+
+    if (opts.algo.name == AlgoName::Structure) {
+        Structure::buildGlyphModel(
+            matchAtlas,
+            {.orientBlocksX = opts.algo.structureOrientBlocksX,
+             .orientBlocksY = opts.algo.structureOrientBlocksY,
+             .bins = opts.algo.structureBins,
+             .massBlocksX = opts.algo.structureMassBlocksX,
+             .massBlocksY = opts.algo.structureMassBlocksY},
+            ctx.structureModel
+        );
+    } else if (opts.algo.name == AlgoName::Bitmask) {
+        Bitmask::buildModel(
+            matchAtlas,
+            {.allowBackground = opts.algo.allowBackground,
+             .softness = opts.algo.bitmaskSoftness,
+             .blurRadius = opts.algo.bitmaskBlurRadius},
+            ctx.bitmaskModel
+        );
+    }
+
+    FrameProcessor::run(frame, opts, ctx);
+
+    if (opts.output.stdoutEnabled) {
+        Terminal::enableAnsi();
+        Terminal::enableUtf8();
+        std::cout << frame.text;
+    }
+
+    if (opts.output.paths.empty()) return 0;
+
     int status = 0;
     for (const std::string& given : opts.output.paths) {
         const std::filesystem::path path = resolveOutputPath(opts, given);
@@ -493,22 +344,13 @@ int run(const Options& opts)
         bool ok = false;
 
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") {
-            ok = ImageRenderer::save(
-                path, buffer, renderAtlas,
-                {.width = opts.output.imageWidth,
-                 .height = opts.output.imageHeight,
-                 .fit = toFit(opts.output.fit),
-                 .align = toAlign(opts.output.align),
-                 .margin = opts.output.imageMargin,
-                 .scale = opts.output.imageScale,
-                 .aspect = opts.output.imageAspect,
-                 .backgroundColor = backdrop}
-            );
+            ok = ImageManager::saveImage(path, frame.renderedImage);
         } else if (ext == ".ans") {
-            ok = OutputManager::saveAns(path, text);
+            ok = OutputManager::saveAns(path, frame.text);
         } else if (ext == ".txt") {
             ok = OutputManager::saveAns(
-                path, AnsiRenderer::render(buffer, charset, {.depth = AnsiRenderer::ColorDepth::None})
+                path,
+                AnsiRenderer::render(frame.buffer, charset, {.depth = AnsiRenderer::ColorDepth::None})
             );
         } else {
             std::cerr << "asciigen: don't know how to write \"" << ext << "\" (.png .jpg .ans .txt)\n";

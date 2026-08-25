@@ -2,12 +2,13 @@
 
 namespace Edges {
 
-void suppressNonMaxima(EdgeField& field)
+void suppressNonMaxima(EdgeField& field, std::vector<float>& snapshot)
 {
     const int w = field.width, h = field.height;
     if (w <= 0 || h <= 0) return;
 
-    const std::vector<float> src = field.magnitude;
+    snapshot = field.magnitude;
+    const std::vector<float>& src = snapshot;
 
     auto at = [&](int x, int y) -> float {
         if (x < 0 || y < 0 || x >= w || y >= h) return 0.f;
@@ -36,14 +37,17 @@ void suppressNonMaxima(EdgeField& field)
     }
 }
 
-std::vector<uint8_t> hysteresisAccept(const EdgeField& field, float high, float low)
+void hysteresisAccept(
+    const EdgeField& field, float high, float low, std::vector<uint8_t>& accepted,
+    std::vector<int>& stack
+)
 {
     const int w = field.width, h = field.height;
-    std::vector<uint8_t> accepted((size_t)w * (size_t)h, 0);
-    if (w <= 0 || h <= 0) return accepted;
+    accepted.assign((size_t)w * (size_t)h, 0);
+    stack.clear();
+    if (w <= 0 || h <= 0) return;
 
-    std::vector<int> stack;
-    stack.reserve(64);
+    if (stack.capacity() < 64) stack.reserve(64);
 
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
@@ -75,8 +79,6 @@ std::vector<uint8_t> hysteresisAccept(const EdgeField& field, float high, float 
             }
         }
     }
-
-    return accepted;
 }
 
 };   // namespace Edges

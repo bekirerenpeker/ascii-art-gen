@@ -6,18 +6,24 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 namespace ImageRenderer {
 
-Image render(const CellBuffer& buffer, const GlyphAtlas& atlas)
+void render(const CellBuffer& buffer, const GlyphAtlas& atlas, Image& out)
 {
     const int cellW = atlas.cellWidth();
     const int cellH = atlas.cellHeight();
-    if (buffer.width() <= 0 || buffer.height() <= 0 || cellW <= 0 || cellH <= 0) return Image();
+    if (buffer.width() <= 0 || buffer.height() <= 0 || cellW <= 0 || cellH <= 0) {
+        out = Image();
+        return;
+    }
     ASCIIGEN_PROFILE("ImageRenderer::render", "output");
 
 
-    Image img(buffer.width() * cellW, buffer.height() * cellH, 3);
+    const int w = buffer.width() * cellW, h = buffer.height() * cellH;
+    if (out.width != w || out.height != h || out.depth != 3) out = Image(w, h, 3);
+    Image& img = out;
 
     // Written through a row pointer rather than setAt. The output is the largest
     // buffer the program touches, and setAt would bounds-check, re-branch on
@@ -42,22 +48,20 @@ Image render(const CellBuffer& buffer, const GlyphAtlas& atlas)
             const int dr = cell.fg.r - br, dg = cell.fg.g - bg, db = cell.fg.b - bb;
 
             for (int y = 0; y < cellH; y++) {
-                byte* out = px + (size_t)(cy * cellH + y) * rowStride + (size_t)cx * cellW * 3;
+                byte* dst = px + (size_t)(cy * cellH + y) * rowStride + (size_t)cx * cellW * 3;
                 const uint8_t* row = glyph ? glyph + (size_t)y * cellW : nullptr;
 
-                for (int x = 0; x < cellW; x++, out += 3) {
+                for (int x = 0; x < cellW; x++, dst += 3) {
                     // Coverage blends background toward foreground, the same as a
                     // terminal drawing the cell.
                     const int a = row ? row[x] : 0;
-                    out[0] = (byte)(br + dr * a / 255);
-                    out[1] = (byte)(bg + dg * a / 255);
-                    out[2] = (byte)(bb + db * a / 255);
+                    dst[0] = (byte)(br + dr * a / 255);
+                    dst[1] = (byte)(bg + dg * a / 255);
+                    dst[2] = (byte)(bb + db * a / 255);
                 }
             }
         }
     }
-
-    return img;
 }
 
 Image scale(const Image& src, int width, int height)
@@ -204,17 +208,24 @@ int suggestedGlyphHeight(int gridRows, int targetHeight, int minimum, int maximu
     return std::clamp(h, minimum, maximum);
 }
 
-Image renderToSize(const CellBuffer& buffer, const GlyphAtlas& atlas, ImageRenderOptions opts)
+void renderToSize(const CellBuffer& buffer, const GlyphAtlas& atlas, ImageRenderOptions opts, Image& out)
 {
-    Image natural = render(buffer, atlas);
-    if (!natural.pixels) return natural;
+    render(buffer, atlas, out);
+    if (!out.pixels) return;
 
     // A missing width or height means "whatever the grid came out as", not "skip
     // all of this" -- scale and margin still have to work against that default
     // canvas, or asking for half size with no explicit picture size does nothing.
     const bool resizing = opts.width > 0 || opts.height > 0 || opts.margin > 0
                        || opts.scale != 1.f || opts.aspect > 0.f;
-    if (!resizing) return natural;
+    if (!resizing) return;   // `out` already holds the answer, reused in place
+
+    // Rarer path (an explicit --image-width/height/scale/margin/aspect): still
+    // allocates fresh buffers through the by-value scale()/compose() calls below,
+    // a known, deliberately unaddressed gap -- see FrameStorage.hpp. Moving
+    // `out`'s buffer into `natural` rather than copying it means this path costs
+    // nothing extra beyond what scale()/compose() were always going to allocate.
+    Image natural = std::move(out);
 
     const int canvasW = opts.width > 0 ? opts.width : natural.width;
     const int canvasH = opts.height > 0 ? opts.height : natural.height;
@@ -246,7 +257,7 @@ Image renderToSize(const CellBuffer& buffer, const GlyphAtlas& atlas, ImageRende
         else if (current > opts.aspect) finalH = (int)std::lround(finalW / opts.aspect);
     }
 
-    return compose(natural, finalW, finalH, opts.align, opts.backgroundColor, margin);
+    out = compose(natural, finalW, finalH, opts.align, opts.backgroundColor, margin);
 }
 
 bool save(
@@ -254,7 +265,8 @@ bool save(
     ImageRenderOptions opts
 )
 {
-    const Image img = renderToSize(buffer, atlas, opts);
+    Image img;
+    renderToSize(buffer, atlas, opts, img);
     if (!img.pixels) return false;
 
     return ImageManager::saveImage(filepath, img);

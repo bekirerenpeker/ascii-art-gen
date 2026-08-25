@@ -43,22 +43,77 @@ them back into a video container.
 
 Built early, ahead of the full per-frame loop (item 6), because item 2 already gives a
 frame count to report progress against — no need to wait for the rest of the pipeline to
-exist before the reporting hook does. For video encode/render progress, so a multi-second-
-to-multi-minute run isn't silent. Could apply to still-image runs too where the pipeline
-already takes a moment (large `--font-render-size`, big source) — worth a look at the same
-time, low cost if the underlying "how far through are we" hook already exists for video.
+exist before the reporting hook does.
+
+**Design, decided ahead of building it.** A modular bar widget, proven first against the
+simple case — one bar, for a single still image's run — before the video case adds real
+complexity. For multithreaded video: one line per worker thread (which frame it's on, what
+stage, progress within that frame) plus one aggregate line at the top (`n/m` frames done
+overall). Multiple live lines need real cursor control (move up N lines, rewrite, move back
+down) — a plain carriage-return-and-overwrite only works for a single line.
+
+**Avoiding lock contention between a worker's real work and its own progress reporting**:
+no shared mutex on progress state — that would reintroduce exactly the per-call lock
+overhead `ASCIIGEN_PROFILE` was deliberately kept away from (`Profiler::enabled()` is a
+relaxed atomic read for a reason). Each worker writes its own progress into its own relaxed
+atomics, unlocked; a single redraw pass, throttled to roughly every 100-200ms rather than
+once per update, is the only thing that reads across all of them and touches the terminal.
+Progress updates at stage granularity (resample done, select done, render done), not
+per-cell — same reasoning as why the profiler's own scopes stop at call granularity: finer
+than that buys nothing visible and starts costing something real.
 
 ## 5. A frame pipe between rendering and file output
 
 Right now `ImageRenderer`/`AnsiRenderer` render straight into a save call. For video this
-needs to become a proper handoff: something that takes frames as they're produced and
-queues them for the file-management side to consume and write out, decoupled enough that
-producer and consumer don't have to run in lockstep. Building this ahead of item 6 — before
-there's a real frame loop to plug into it — means the loop gets written against this
-interface from the start rather than having output bolted on after the fact. It's also what
-makes item 8's multithreading tractable later: a worker thread rendering frame N+1 while
-another thread is still encoding frame N needs exactly this kind of queue between them, not
-a redesign once threading is added.
+needs to become a proper handoff between decode, per-frame processing, and file output,
+decoupled enough that none of the three have to run in lockstep. Building this ahead of
+item 6 — before there's a real frame loop to plug into it — means the loop gets written
+against this interface from the start rather than having output bolted on after the fact.
+
+**Fixed-size slot pool, not a queue of frames.** A fixed array of N "frame workspace"
+slots (N = worker count + 2-3 slack), each persistent for the life of the run and holding
+every big, expensive-to-allocate per-frame buffer together: the decoded input frame, the
+resampled plane, the `CellBuffer`, the rendered output. Allocated once each, lazily, on
+first use — after warm-up, zero further reallocation, the same principle item 6 already
+wants for the algorithm-internal scratch buffers, just one level up. Kept as a *fixed*
+array specifically so the pool itself can never move or reallocate the buffers — only a
+slot index and a state travel through any queue, never the buffers themselves.
+
+Not every slot needs every buffer actually allocated: for a text/ANSI-only output run, the
+rendered-output member of every slot just stays at `Image`'s own default-constructed empty
+state, since nothing ever calls the pixel-render step for that format. One struct shape
+covers every output format without a special case.
+
+**Per-slot state**, not a plain claimed/free flag, since the decoder, a worker, and the
+save step can all be touching different slots at once: free → being decoded into → ready
+for a worker → claimed → done-with-input → saved. "Done-with-input" is deliberately its
+own state before "saved" — a worker only needs the source pixels for the early part of its
+own work (resample, then glyph/colour selection reads them); everything after that works
+off the `CellBuffer` and render output, not the original frame, so the input buffer can
+recycle back to the decoder well before that worker has finished the frame end to end.
+Worth a live terminal view of this per-slot state during a run — one more thing item 4's
+progress bar can show, once threading exists to make it interesting.
+
+**Distribution.** One decode thread is the only thing that ever calls
+`VideoReader::nextFrame` — it cannot be called concurrently (see the video-loading design:
+decode is inherently sequential, one packet/frame stream of internal state). It claims a
+free slot, decodes into it, and pushes the slot's index onto a *bounded* ready-queue.
+Worker threads pop an index, run the whole per-frame pipeline (item 6) against that slot's
+buffers, and mark the input buffer recyclable once they're actually done reading it.
+Bounded, not unbounded, on purpose: an unbounded queue lets a decoder that's faster than
+the workers race ahead and decode the entire video before processing catches up, which
+defeats the reason this is a streaming design at all.
+
+**Ordered save.** Workers finish frames in whatever order they finish — but a video's
+frames have to reach the muxer in order; FFmpeg's encoder genuinely requires this, it's
+not a style preference. So: a `lastSaved` counter starts at -1. When a worker reports
+frame N done, and `N == lastSaved + 1`, it's written immediately, `lastSaved` advances, and
+the pending set is checked again for the new `lastSaved + 1` — cascading through however
+many already-finished frames were waiting on this one gap closing. Otherwise the finished
+frame goes into a small `pending` map keyed by frame index until its gap closes. This only
+ever needs to hold as many entries as the slot pool has in flight, so its size is bounded
+by the same N as the pool above — the two should be sized together, not treated as
+independent.
 
 ## 6. Loop the existing pipeline over frames
 
@@ -75,6 +130,14 @@ and `Bitmask.cpp`) needs to move to being allocated once outside the frame loop 
 the same pattern the profiling branch already used for T2's `massCountsScratch` and the
 various `blur` scratch vectors.
 
+**Stills and video become the same code path, not two.** The per-frame sequence (resample
+→ dither → algorithm select → edges → grade → render) gets pulled out as its own function
+operating on one of item 5's workspace slots, called identically whether it's driven by a
+still image or a video worker thread. A still image really is the `N == 1` case then, not
+just in spirit: `Pipeline::run` for a single image allocates one workspace, calls this
+function once, saves the result — no separate still-image code path to let drift out of
+sync with whatever the video path does.
+
 ## 7. Trivial optimizations + tests
 
 Whatever falls out of actually running the loop from item 6 as a real thing — likely small
@@ -85,11 +148,10 @@ format detection) at this point, once there's a stable shape to test against.
 ## 8. Basic multithreading
 
 Iterating on a 10-second clip single-threaded is not a usable feedback loop, and
-flicker/frame-to-frame consistency bugs only show up by actually watching output. Doesn't
-need to be sophisticated — a worker pool over independent frames, feeding item 5's pipe, is
-enough to get a test clip back in seconds instead of the better part of an hour, and
-correctness (no flicker, no frame reordering) matters more here than throughput. Full
-multithreading tuning is its own later pass, not this one.
+flicker/frame-to-frame consistency bugs only show up by actually watching output. The
+actual worker-pool/slot-pool/ordered-save design is already written up under item 5 — this
+item is building it, not designing it. Correctness (no flicker, no frame reordering)
+matters more here than throughput; full multithreading tuning is its own later pass.
 
 ## 9. Broad format support
 

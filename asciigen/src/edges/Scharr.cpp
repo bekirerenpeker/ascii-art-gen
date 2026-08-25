@@ -21,7 +21,9 @@ static float lumaAt(const Image& plane, int x, int y)
     return 0.299f * c.r + 0.587f * c.g + 0.114f * c.b;
 }
 
-void detectScharr(const Image& image, int cols, int rows, int subsamples, EdgeField& out)
+void detectScharr(
+    const Image& image, int cols, int rows, int subsamples, EdgeField& out, Image& planeScratch
+)
 {
     const int sub = std::max(1, subsamples);
     const int planeW = cols * sub;
@@ -35,8 +37,8 @@ void detectScharr(const Image& image, int cols, int rows, int subsamples, EdgeFi
 
     if (!image.pixels || cols <= 0 || rows <= 0) return;
 
-    Image plane;
-    Resample::toGrid(image, plane, planeW, planeH);
+    Resample::toGrid(image, planeScratch, planeW, planeH);
+    const Image& plane = planeScratch;
 
     // A plane sample is not square in image space -- glyph cells are roughly 1:2 --
     // so raw gradients describe angles in a vertically squashed copy of the picture.

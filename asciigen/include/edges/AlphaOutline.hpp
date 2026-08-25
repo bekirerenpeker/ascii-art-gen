@@ -8,6 +8,12 @@ namespace Edges {
 // `alpha` is a depth-1 image, one byte of coverage per source pixel, at the
 // SOURCE's own resolution -- not the RGB plane the rest of the pipeline works
 // from, which has already lost its alpha channel by the time edges run.
-void detectAlphaOutline(const Image& alpha, int cols, int rows, int subsamples, EdgeField& out);
+//
+// `planeScratch` is caller-owned scratch for the resampled alpha plane this
+// builds internally, reused across calls instead of a fresh Image made here
+// each time.
+void detectAlphaOutline(
+    const Image& alpha, int cols, int rows, int subsamples, EdgeField& out, Image& planeScratch
+);
 
 };   // namespace Edges
