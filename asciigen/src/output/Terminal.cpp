@@ -90,6 +90,23 @@ bool isTty()
 #endif
 }
 
+bool supportsUnicodeBlocks()
+{
+    // Windows Terminal and VS Code's integrated terminal (and most things that
+    // set TERM_PROGRAM, or ConEmu) ship a font with full block-drawing coverage
+    // and are the common case on a modern setup. No such marker present is the
+    // signal for classic conhost.exe, which is the one that reliably doesn't.
+    if (std::getenv("WT_SESSION")) return true;
+    if (std::getenv("TERM_PROGRAM")) return true;
+    if (std::getenv("ConEmuANSI")) return true;
+
+#ifndef _WIN32
+    return true;   // every POSIX terminal worth targeting ships a real Unicode font
+#else
+    return false;
+#endif
+}
+
 bool getSize(int& cols, int& rows)
 {
 #ifdef _WIN32

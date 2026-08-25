@@ -28,12 +28,22 @@ std::string renderOneLine(const Line& line)
     int cols = 0, rows = 0;
     const int totalWidth = (Terminal::getSize(cols, rows) && cols > 20) ? std::min(cols - 1, 100) : 70;
 
-    // Budget: label, " [", stage, "] ", bar, " ", percent. Bar takes whatever's
+    // Budget: label, " [", stage, "] [", bar, "]", " NNN%". Bar takes whatever's
     // left, clamped so it never vanishes on a narrow terminal or balloons on a huge one.
-    const int fixedWidth = (int)line.label.size() + 3 + (int)std::string(stage).size() + 2 + 1 + 5;
+    const int fixedWidth = (int)line.label.size() + (int)std::string(stage).size() + 11;
     const int barWidth = std::clamp(totalWidth - fixedWidth, 10, 40);
 
     const int filled = (int)std::lround(barWidth * fraction);
+
+    // ASCII by default: a terminal whose current font lacks block-drawing glyphs
+    // renders U+2588/U+2591 as boxes or garbage, and there is no reliable way to
+    // ask it whether it will -- only heuristics about which terminal programs
+    // are known to ship a font that does. '#'/'.' always renders correctly
+    // everywhere, so that is the safe default; the Unicode bar is only used
+    // where Terminal::supportsUnicodeBlocks() has an actual signal to go on.
+    const bool unicode = Terminal::supportsUnicodeBlocks();
+    const char* fillGlyph = unicode ? "\xE2\x96\x88" : "#";    // U+2588 FULL BLOCK
+    const char* emptyGlyph = unicode ? "\xE2\x96\x91" : ".";   // U+2591 LIGHT SHADE
 
     std::string out;
     out += kLabelColor;
@@ -43,13 +53,14 @@ std::string renderOneLine(const Line& line)
     out += kStageColor;
     out += stage;
     out += kReset;
-    out += "] ";
+    out += "] [";
 
     out += kBarFillColor;
-    for (int i = 0; i < filled; i++) out += "\xE2\x96\x88";   // U+2588 FULL BLOCK
+    for (int i = 0; i < filled; i++) out += fillGlyph;
     out += kBarEmptyColor;
-    for (int i = filled; i < barWidth; i++) out += "\xE2\x96\x91";   // U+2591 LIGHT SHADE
+    for (int i = filled; i < barWidth; i++) out += emptyGlyph;
     out += kReset;
+    out += "]";
 
     char pct[8];
     std::snprintf(pct, sizeof(pct), " %3d%%", (int)std::lround(fraction * 100.f));

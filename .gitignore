@@ -45,6 +45,7 @@ Desktop.ini
 # is not, unless you own them. Drop your own pictures in here; nothing in the
 # project depends on any particular file being present.
 assets/images/
+assets/videos/
 
 # Bundled fonts. The default is now whichever monospace face the OS already has
 # (picked per-OS in app/CMakeLists.txt), so no font needs shipping. A copy left

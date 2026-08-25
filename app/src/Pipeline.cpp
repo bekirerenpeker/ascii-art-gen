@@ -166,6 +166,15 @@ int run(const Options& opts)
 
     ASCIIGEN_PROFILE("run", "pipeline");
 
+    // Unconditional and this early on purpose: the progress bar needs both of
+    // these active before it ever draws a frame, not just before the final
+    // ASCII art gets printed. Without enableUtf8() first, the console is still
+    // decoding stdout under its default (non-UTF-8) codepage while the bar's
+    // own escape/glyph bytes go out, which is exactly what garbles it. A no-op
+    // when stdout is redirected -- see Terminal::enableAnsi()'s own note.
+    Terminal::enableAnsi();
+    Terminal::enableUtf8();
+
     // Loaded before there's anywhere to put it -- resolveGridSize below needs the
     // source's own dimensions, and the pool below needs the grid size to know how
     // big to make each slot, so this has to come first regardless.
@@ -354,8 +363,6 @@ int run(const Options& opts)
     FrameStorage& frame = pool.slot(0).storage;
 
     if (opts.output.stdoutEnabled) {
-        Terminal::enableAnsi();
-        Terminal::enableUtf8();
         std::cout << frame.text;
     }
 
