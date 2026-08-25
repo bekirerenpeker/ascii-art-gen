@@ -15,15 +15,28 @@ SIZE
 COLOUR
 
   --grid-brightness F                                            (1.0)
-      Linear gain. Clips at the top.
+      Linear gain. Clips at the top, so highlights go flat white before
+      the midtones have moved much. Prefer --grid-gamma.
+      1.0  off     1.2  mild     1.5  bright highlights start clipping
 
   --grid-gamma F                                                 (1.0)
       Below 1 lifts without clipping. Usually what you want.
+      0.5  as far as it is worth going     0.7  strong lift
+      0.85 gentle     1.0  off     1.3  darkens
 
   --grid-vibrance F                                              (0.0)
       Saturation that boosts dull colours most and leaves already-vivid
       ones nearly alone. Flat saturation drives strong colours into
       clipping; it is the washed-out midtones that read as lifeless.
+
+      The number is the most a fully grey colour can be pushed; an already
+      saturated one is left alone whatever you set.
+      0.2  subtle     0.4  the usual choice     0.8  poster-like
+
+      Negative runs the same rule backwards: it drains the DULL colours to
+      grey and leaves the vivid ones alone, so -1 gives a near-monochrome
+      picture with the strong colours still in it. It is not a greyscale
+      switch -- for that, use --color none.
 
   --grid-palette NAME                                           (none)
       none | gruvbox | nord. Snaps colours to a fixed palette, matched by
@@ -31,6 +44,9 @@ COLOUR
 
   --grid-palette-strength F                                      (1.0)
       Below 1 tints toward the palette instead of quantising to it.
+      0.3  a wash of the palette over the real colours
+      0.6  clearly themed, still photographic
+      1.0  full quantise -- only palette colours survive
 
 
 CLEANUP

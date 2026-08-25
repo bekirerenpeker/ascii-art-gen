@@ -20,6 +20,12 @@ for, and once you ask for one, printing stops unless you also pass --stdout.
   --color MODE                                             (truecolor)
       truecolor | ansi16 | none
 
+  --png-compression N                                              (8)
+      0 fastest and largest, 9 slowest and smallest. Below 5 also skips stb's
+      row-filter search, which is where most of the encoding time actually
+      goes -- level 1 is about a third faster than 8 for ~9% more bytes.
+      Always lossless, whatever the level.
+
   --overwrite                                                    (off)
       Allow replacing a file that already exists. Without it, an existing
       path is refused.
@@ -43,6 +49,15 @@ PICTURE SIZE
   --image-margin N       pixels kept clear on every side           (0)
   --image-scale F        art size as a fraction of what is left  (1.0)
   --image-aspect R       reshape the final picture, e.g. 16:9        (off)
+
+  --image-scale    0.5  half size, lots of backdrop around it
+                   0.7  a comfortable wallpaper inset
+                   1.0  fill the box completely
+  --image-margin   40   a visible border on a 1920-wide picture
+                   120  a wide frame
+                   Given in output pixels, so scale it with the picture.
+  --image-aspect   16:9  widescreen     21:9  ultrawide
+                   4:3   older screens  1:1   square
 
   --image-aspect only ever GROWS the picture: the short side is extended with
   backdrop. Nothing is cropped and the art is never resampled, so a square

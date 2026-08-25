@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "file_management/ImageManager.hpp"
 #include "core/Image.hpp"
 #include "stb/stb_image_write.h"
@@ -51,8 +52,25 @@ bool saveImage(std::filesystem::path filepath, const Image& img)
     return false;
 }
 
+void setPngCompression(int level)
+{
+    stbi_write_png_compression_level = std::clamp(level, 0, 9);
+
+    // The compression level barely moves the needle for this content -- stb's
+    // cost is dominated by trying all five PNG row filters and keeping the best,
+    // not by deflate. Forcing one filter skips that search entirely. Filter 1
+    // (Sub) suits ASCII art: long runs of identical backdrop, and neighbouring
+    // pixels within a glyph that differ mostly horizontally.
+    //
+    // Only at the fast end -- above level 4 the caller has asked for small files
+    // and should get the real search back.
+    stbi_write_force_png_filter = level <= 4 ? 1 : -1;
+}
+
 bool savePng(std::filesystem::path filepath, const Image& img)
 {
+    ASCIIGEN_PROFILE("savePng", "io");
+
     stbi_flip_vertically_on_write(1);
     return stbi_write_png(
                filepath.string().c_str(), img.width, img.height, img.depth, img.pixels, 0

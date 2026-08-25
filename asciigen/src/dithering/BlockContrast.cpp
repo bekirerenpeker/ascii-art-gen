@@ -32,20 +32,45 @@ void computeBlockContrast(
     const int winH = std::max(blockH, 3);
     const float n = (float)(winW * winH);
 
+    // S3: plane is always the 3-channel, exactly grid-sized output of
+    // Resample::toGrid (see Structure.cpp/Bitmask.cpp's own tile gather) --
+    // a fast row-pointer path for that shape, with the exact getAt path kept
+    // as a fallback for anything that window can't cover without a clamp, or
+    // for a plane that turns out not to be 3-channel after all.
+    const bool fast3 = plane.depth == 3;
+    const byte* const planePx = plane.pixels;
+    const size_t stride = (size_t)plane.width * 3;
+
     for (int by = 0; by < out.rows; by++) {
         for (int bx = 0; bx < out.cols; bx++) {
             const int x0 = bx * blockW + blockW / 2 - winW / 2;
             const int y0 = by * blockH + blockH / 2 - winH / 2;
 
+            const bool interior = fast3 && x0 >= 0 && y0 >= 0 && x0 + winW <= plane.width
+                                && y0 + winH <= plane.height;
+
             float sum = 0.f, sumSq = 0.f;
-            for (int wy = 0; wy < winH; wy++) {
-                for (int wx = 0; wx < winW; wx++) {
-                    const int x = std::clamp(x0 + wx, 0, plane.width - 1);
-                    const int y = std::clamp(y0 + wy, 0, plane.height - 1);
-                    const PixelColor c = plane.getAt(x, y);
-                    const float l = 0.299f * c.r + 0.587f * c.g + 0.114f * c.b;
-                    sum += l;
-                    sumSq += l * l;
+
+            if (interior) {
+                for (int wy = 0; wy < winH; wy++) {
+                    const byte* p = planePx + (size_t)(y0 + wy) * stride + (size_t)x0 * 3;
+                    for (int wx = 0; wx < winW; wx++, p += 3) {
+                        const float l = 0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2];
+                        sum += l;
+                        sumSq += l * l;
+                    }
+                }
+            }
+            else {
+                for (int wy = 0; wy < winH; wy++) {
+                    for (int wx = 0; wx < winW; wx++) {
+                        const int x = std::clamp(x0 + wx, 0, plane.width - 1);
+                        const int y = std::clamp(y0 + wy, 0, plane.height - 1);
+                        const PixelColor c = plane.getAt(x, y);
+                        const float l = 0.299f * c.r + 0.587f * c.g + 0.114f * c.b;
+                        sum += l;
+                        sumSq += l * l;
+                    }
                 }
             }
 

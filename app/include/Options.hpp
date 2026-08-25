@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Color.hpp"
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +35,13 @@ enum class DitherName
     Bayer4,
 };
 
+enum class ResampleFilterName
+{
+    Auto,
+    Box,
+    Triangle,
+};
+
 enum class EdgeName
 {
     None,
@@ -52,6 +60,12 @@ enum class BackdropMode
     None,
     Auto,
     Fixed,
+
+    // Terminal/text sinks only: no background escape is emitted at all, so
+    // whatever the terminal's own background is shows through, the same as
+    // ordinary unstyled text. Image output has no such notion to fall back
+    // to and renders exactly as None would.
+    Transparent,
 };
 
 enum class ColorMode
@@ -69,6 +83,19 @@ enum class ImageFit
     Contain,
     Cover,
     Stretch,
+};
+
+// How much effort the OUTPUT is worth. Only ever touches render resolution and
+// encoding effort -- never which glyph gets picked, never the colours. Meant for
+// iterating fast and then committing to a final render, so it deliberately also
+// drops the grid size: a preview at full grid but tiny glyphs still costs the
+// full selection pass, which is the expensive half.
+enum class RenderDetail
+{
+    None,
+    Test,
+    Mid,
+    High,
 };
 
 enum class ImageAlign
@@ -169,8 +196,32 @@ struct EdgeOptions
 {
     EdgeName name = EdgeName::None;
     int subsamples = 4;
-    float threshold = 0.3f;
+
+    // A mean over the cell's sub-samples, not the strongest one -- see
+    // Edges::Options::threshold. Reads lower than the old peak-based default.
+    float threshold = 0.15f;
     float coherence = 0.55f;
+    float hysteresis = 0.5f;
+    bool nms = true;
+
+    // Ink colour override for Scharr's own stamped cells. colorSet false means
+    // "leave the selector's colour alone" -- there's no sentinel RGB for that.
+    bool colorSet = false;
+    RGB color {255, 255, 255};
+    float brightness = 1.f;
+
+    // Separate pass, stamped after the gradient detector above. Reads the
+    // source's own alpha channel rather than inferring a boundary from luma, so
+    // it only does anything on a source that actually has transparency.
+    bool alphaOutline = false;
+    float alphaThreshold = 0.5f;
+    float alphaCoherence = 0.6f;
+
+    // Independent of colorSet/color/brightness above, on purpose -- the two
+    // passes commonly want different treatment (see --help edge).
+    bool alphaColorSet = false;
+    RGB alphaColor {255, 255, 255};
+    float alphaBrightness = 1.f;
 };
 
 struct AlgoOptions
@@ -192,13 +243,40 @@ struct AlgoOptions
     int structureMassBlocksY = 16;
     int structureBins = 4;
 
+    // el-3: quality/speed trade, off by default -- see --help algo. Changes
+    // nothing at 1.
+    int structureGradientStride = 1;
+
+    // el-4: on by default -- measured a ~43% cut on buildDescriptor's share
+    // of Structure::generate for a 0.14% cell-level glyph change on a real
+    // photo (see optimizations.md item 7), judged worth it. Turn off with
+    // --no-algo-structure-fast-atan for the exact std::atan2 + std::fmod path.
+    bool structureFastAtan = true;
+
+    // Flat-tile shortcut threshold in pickGlyph -- see Structure.hpp's
+    // flatThreshold. 0 would only ever fire on an exactly-uniform tile, which
+    // real photos essentially never produce, so this defaults a little above
+    // that.
+    float structureFlatThreshold = 0.02f;
+
     // Only Ramp reads this: it wants an ordered string, not a glyph set.
     std::string rampChars = " .:-=+*#%@";
+
+    // Shared by all three algorithms -- see Resample.hpp. Auto (the default)
+    // picks a real cubic filter by direction; Box and Triangle force one
+    // filter both ways. Box is not a match for the resample's own old,
+    // hand-rolled per-pixel average -- measured meaningfully different from
+    // it -- so it is offered as "the other stb filter", not "the exact
+    // previous behaviour".
+    ResampleFilterName resampleFilter = ResampleFilterName::Auto;
 };
 
 struct BackdropOptions
 {
-    BackdropMode mode = BackdropMode::None;
+    // Bare invocation, no preset: your terminal's own background shows through
+    // rather than a painted black rectangle. Every preset that cares sets its
+    // own mode explicitly, so this default is only ever seen unstyled.
+    BackdropMode mode = BackdropMode::Transparent;
     RGB color {0, 0, 0};
     float darken = 0.15f;
     float lumaThreshold = 40.f;
@@ -229,6 +307,10 @@ struct OutputOptions
     // Width over height. Only grows the final picture; never crops it and never
     // resamples the art. 0 leaves its shape alone.
     float imageAspect = 0.f;
+
+    // 0 fastest and largest, 9 slowest and smallest. stb's default is 8, which
+    // makes PNG encoding the single most expensive stage of a normal run.
+    int pngCompression = 8;
 };
 
 struct Options
@@ -245,6 +327,11 @@ struct Options
     OutputOptions output;
 
     std::vector<std::string> presets;
+    RenderDetail renderDetail = RenderDetail::None;
+
+    // Where to write the Chrome-trace JSON. Empty means profiling stays off, so
+    // the flag's presence is the whole switch.
+    std::string profilePath;
 
     bool helpRequested = false;
     std::string helpTopic;

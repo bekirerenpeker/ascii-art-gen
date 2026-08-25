@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Image.hpp"
+#include <vector>
 
 // Pre-filters. These run on the source image BEFORE resampling and selection,
 // so they change which glyph gets chosen. Note that fixing exposure here is not
@@ -30,6 +31,9 @@ void blur(Image& image, int radius);
 
 // The same kernel over a bare float plane, for mid-pipeline callers that do not
 // have an Image: unsharpMask above, and Bitmask blurring its glyph masks.
-void blur(const float* src, float* dst, int w, int h, int radius);
+// scratch is caller-owned and resized in place, not allocated fresh each call
+// -- pass the same vector back in across repeated calls of the same w*h (once
+// per channel, once per glyph, ...) and it never reallocates past the first.
+void blur(const float* src, float* dst, int w, int h, int radius, std::vector<float>& scratch);
 
 };   // namespace ImageFilters

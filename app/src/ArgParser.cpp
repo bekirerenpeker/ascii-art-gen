@@ -247,6 +247,39 @@ Result parse(int argc, char* argv[], Options& out)
         }
     }
 
+    // Second half of the same pre-pass: render detail lands after presets so it
+    // can override the render size a preset chose, and before the main loop so
+    // an explicit --font-render-size or --grid-width still wins over both.
+    {
+        Reader r(tokens);
+        for (; !r.done(); r.advance()) {
+            if (r.current().name != "render-detail") continue;
+
+            const std::string v = r.value("render-detail");
+            if (r.failed()) return Result::ExitFailure;
+
+            // Grid size is deliberately NOT touched. How many cells there are
+            // decides which glyphs get chosen and what the picture looks like --
+            // that is a styling decision, not a detail level. Changing it here
+            // would mean a preview showed different art from the final render,
+            // which defeats the point of previewing.
+            if (v == "test") {
+                out.font.renderSize = 16;
+                out.output.pngCompression = 1;
+            } else if (v == "mid") {
+                out.font.renderSize = 32;
+                out.output.pngCompression = 4;
+            } else if (v == "high") {
+                out.font.renderSize = 64;
+                out.output.pngCompression = 9;
+            } else {
+                std::cerr << "asciigen: unknown --render-detail \"" << v
+                          << "\" (test, mid, high)\n";
+                return Result::ExitFailure;
+            }
+        }
+    }
+
     Reader r(tokens);
 
     for (; !r.done(); r.advance()) {
@@ -277,6 +310,7 @@ Result parse(int argc, char* argv[], Options& out)
             }
             continue;
         }
+        if (n == "profile") { out.profilePath = r.value(n); continue; }
         if (n == "version") {
             out.showVersion = true;
             continue;
@@ -398,6 +432,43 @@ Result parse(int argc, char* argv[], Options& out)
         if (n == "edge-threshold") { out.edge.threshold = r.floatValue(n); continue; }
         if (n == "edge-coherence") { out.edge.coherence = r.floatValue(n); continue; }
         if (n == "edge-subsamples") { out.edge.subsamples = r.intValue(n); continue; }
+        if (n == "edge-hysteresis") { out.edge.hysteresis = r.floatValue(n); continue; }
+        if (n == "edge-nms") { out.edge.nms = true; continue; }
+        if (n == "no-edge-nms") { out.edge.nms = false; continue; }
+        if (n == "edge-alpha") { out.edge.alphaOutline = true; continue; }
+        if (n == "no-edge-alpha") { out.edge.alphaOutline = false; continue; }
+        if (n == "edge-alpha-threshold") { out.edge.alphaThreshold = r.floatValue(n); continue; }
+        if (n == "edge-alpha-coherence") { out.edge.alphaCoherence = r.floatValue(n); continue; }
+        if (n == "edge-color") {
+            const std::string v = r.value(n);
+            if (!parseColor(v, out.edge.color)) r.fail("bad --edge-color \"" + v + "\" (#RRGGBB)");
+            out.edge.colorSet = true;
+            continue;
+        }
+        if (n == "no-edge-color") { out.edge.colorSet = false; continue; }
+        if (n == "edge-brightness") { out.edge.brightness = r.floatValue(n); continue; }
+        if (n == "edge-alpha-color") {
+            const std::string v = r.value(n);
+            if (!parseColor(v, out.edge.alphaColor))
+                r.fail("bad --edge-alpha-color \"" + v + "\" (#RRGGBB)");
+            out.edge.alphaColorSet = true;
+            continue;
+        }
+        if (n == "no-edge-alpha-color") { out.edge.alphaColorSet = false; continue; }
+        if (n == "edge-alpha-brightness") { out.edge.alphaBrightness = r.floatValue(n); continue; }
+        if (n == "edge-color-both") {
+            const std::string v = r.value(n);
+            if (!parseColor(v, out.edge.color))
+                r.fail("bad --edge-color-both \"" + v + "\" (#RRGGBB)");
+            out.edge.colorSet = true;
+            out.edge.alphaColor = out.edge.color;
+            out.edge.alphaColorSet = true;
+            continue;
+        }
+        if (n == "edge-brightness-both") {
+            out.edge.brightness = out.edge.alphaBrightness = r.floatValue(n);
+            continue;
+        }
 
         // --- algorithm ---
         if (n == "algo") {
@@ -433,14 +504,33 @@ Result parse(int argc, char* argv[], Options& out)
                 r.fail("bad --algo-structure-mass-blocks \"" + v + "\" (want WxH)");
             continue;
         }
+        if (n == "algo-structure-gradient-stride") {
+            out.algo.structureGradientStride = r.intValue(n);
+            continue;
+        }
+        if (n == "algo-structure-fast-atan") { out.algo.structureFastAtan = true; continue; }
+        if (n == "no-algo-structure-fast-atan") { out.algo.structureFastAtan = false; continue; }
+        if (n == "algo-structure-flat-threshold") {
+            out.algo.structureFlatThreshold = r.floatValue(n);
+            continue;
+        }
+        if (n == "resample-filter") {
+            const std::string v = r.value(n);
+            if (v == "auto") out.algo.resampleFilter = ResampleFilterName::Auto;
+            else if (v == "box") out.algo.resampleFilter = ResampleFilterName::Box;
+            else if (v == "triangle") out.algo.resampleFilter = ResampleFilterName::Triangle;
+            else r.fail("unknown --resample-filter \"" + v + "\" (auto, box, triangle)");
+            continue;
+        }
 
         // --- backdrop ---
         if (n == "backdrop") {
             const std::string v = r.value(n);
             if (v == "none") out.backdrop.mode = BackdropMode::None;
             else if (v == "auto") out.backdrop.mode = BackdropMode::Auto;
+            else if (v == "transparent") out.backdrop.mode = BackdropMode::Transparent;
             else if (parseColor(v, out.backdrop.color)) out.backdrop.mode = BackdropMode::Fixed;
-            else r.fail("bad --backdrop \"" + v + "\" (none, auto, or #RRGGBB)");
+            else r.fail("bad --backdrop \"" + v + "\" (none, auto, transparent, or #RRGGBB)");
             continue;
         }
         if (n == "backdrop-darken") { out.backdrop.darken = r.floatValue(n); continue; }
@@ -473,6 +563,15 @@ Result parse(int argc, char* argv[], Options& out)
             const std::string v = r.value(n);
             if (!parseAspect(v, out.output.imageAspect))
                 r.fail("bad --image-aspect \"" + v + "\" (want 16:9 or 1.778)");
+            continue;
+        }
+        if (n == "png-compression") { out.output.pngCompression = r.intValue(n); continue; }
+        if (n == "render-detail") {
+            const std::string v = r.value(n);
+            if (v == "test") out.renderDetail = RenderDetail::Test;
+            else if (v == "mid") out.renderDetail = RenderDetail::Mid;
+            else if (v == "high") out.renderDetail = RenderDetail::High;
+            else r.fail("unknown --render-detail \"" + v + "\" (test, mid, high)");
             continue;
         }
         if (n == "image-margin") { out.output.imageMargin = r.intValue(n); continue; }

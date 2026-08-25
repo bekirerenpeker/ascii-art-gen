@@ -6,18 +6,68 @@ were chosen. Off by default.
   --edge NAME                                                   (none)
       none | scharr
 
-  --edge-threshold F                                             (0.3)
+  --edge-threshold F                                            (0.15)
       How strong an edge has to be before anything is stamped. The
-      "how much edging" dial.
-      0.1  nearly everything     0.3  outlines     0.6  only the strongest
+      "how much edging" dial. A MEAN over the cell, not its strongest pixel
+      -- see NOISE AND HYSTERESIS below -- so it reads lower than you'd
+      expect from a peak-based detector.
+      0.05  nearly everything     0.15  outlines     0.3  only the strongest
+
+  --edge-hysteresis F                                            (0.5)
+      A cell too faint for --edge-threshold on its own still survives if it
+      clears threshold*F AND touches a cell that met the full threshold.
+      Given as a ratio of threshold, so it stays sane however threshold is
+      set. 1.0 turns hysteresis off -- a cell needs the full threshold alone.
+      0.3  only continuations of a real edge     0.5  default
+      0.8  lets weak edges chain a long way       1.0  off
+
+  --edge-nms on|off                                               (on)
+      Non-maximum suppression: keeps a cell's edge only if it is stronger
+      than its neighbours ACROSS the line, dropping the rest. This is what
+      keeps an outline one character wide. Off restores the old behaviour,
+      where a blurred edge could light up three or four cells deep.
 
   --edge-coherence F                                            (0.55)
       How much the cell has to agree on a single direction. Rejects
       texture, where the samples point every which way and no line
       character would represent it.
 
+      It is the fraction of the cell's edge strength pointing the same way,
+      so it runs 0 to 1 and the numbers are readable: random texture lands
+      near 0.3, a clean straight line near 0.9.
+
+      0.4   lets textured cells through     0.55  default
+      0.75  only unmistakable lines         above 0.9  almost nothing
+
   --edge-subsamples N                                              (4)
-      Gradient samples per cell per axis.
+      Gradient samples per cell per axis, so 4 means 16 samples per cell.
+      Cost grows with the square -- 8 is four times the work of 4.
+      2  coarse and cheap     4  default     8  finer, rarely worth it
+
+
+NOISE, WIDTH, AND HYSTERESIS
+
+  Two separate problems, both fixed the same way Canny edge detection fixes
+  them, and both on by default:
+
+  WIDTH. A real edge in a photo is rarely a single sharp step -- resampling,
+  blur and depth of field spread it over a few pixels, so its gradient is a
+  ridge, not a spike. Thresholding a ridge lights up every cell along its
+  slope, which is the three-or-four-cells-wide outline you get from a low
+  threshold. --edge-nms fixes this: each cell is kept only if it is the
+  local peak along the direction the edge runs, so the ridge collapses to
+  the one cell that is genuinely it.
+
+  NOISE INSIDE THE OBJECT. A stray strong pixel -- a specular highlight, a
+  compression artefact -- used to be enough to flag a whole cell on its own,
+  because the old magnitude was the cell's single strongest sample. It is
+  now a mean over every sample in the cell, so one hot pixel among many flat
+  ones gets diluted rather than deciding the cell alone.
+
+  That fix costs you the fainter, genuinely-real end of a long edge, which
+  --edge-hysteresis buys back: a faint cell is still kept if it touches one
+  that met the full threshold, so a real line doesn't break up just because
+  it trails off.
 
 
 WHY IT IS OFF BY DEFAULT
@@ -41,3 +91,66 @@ THE CHARSET DOES NOT NEED THESE CHARACTERS
 
   A blocks charset has none of the four and used to produce no edges at all.
   It now produces all four directions.
+
+
+ALPHA OUTLINE
+
+  A second, separate pass -- its own inputs, applied AFTER --edge scharr and
+  overwriting anything Scharr already stamped in the same cell. Only does
+  something on a source that actually carries transparency: a sprite, a
+  logo, a rendered product shot. On one of those, the alpha channel already
+  IS the object's exact silhouette, so there is nothing to infer the way
+  Scharr has to from brightness alone -- no missed interior lines, no
+  guessing where "inside" ends.
+
+  --edge-alpha                                                   (off)
+  --no-edge-alpha
+      Reads the SOURCE's own alpha channel, not the picture Scharr sees --
+      that channel is gone by the time Scharr runs. On a source with no
+      alpha, this prints a note and does nothing.
+
+  --edge-alpha-threshold F                                       (0.5)
+      How much alpha has to swing across a cell. Higher than Scharr's
+      default on purpose: a real alpha edge is close to a hard 0-to-255
+      step, so this rarely needs lowering.
+
+  --edge-alpha-coherence F                                       (0.6)
+      Same meaning as --edge-coherence, applied to the alpha gradient's own
+      direction.
+
+  Shares --edge-subsamples and --edge-hysteresis with Scharr -- both are
+  about sampling density and ridge cleanup, which mean the same thing for
+  either channel.
+
+
+COLOUR
+
+  Only the glyph's ink is touched -- the background stays whatever the
+  selector (or --backdrop) already gave the cell, so an outline tints the
+  stroke rather than cutting a flat-coloured hole in the picture. Applied
+  as edges are stamped, so --grid-gamma/vibrance/palette still run on top
+  of whatever colour ends up here, same as everywhere else.
+
+  Scharr and alpha outline colour independently -- a photo's inferred edges
+  and a sprite's true silhouette often want different treatment.
+
+  --edge-color #RRGGBB                                          (off)
+  --no-edge-color
+      Fixed colour for Scharr's own stamped cells. Off means inherit
+      whatever colour the selector already chose for that cell.
+
+  --edge-brightness F                                            (1.0)
+      Gain on Scharr's stamped cells, applied AFTER --edge-color -- so it
+      works whether or not a fixed colour is set, as a plain "make the
+      outline pop" dial that needs no colour picking at all.
+      0.6  darker     1.0  off     1.4  brighter, clips at white
+
+  --edge-alpha-color #RRGGBB     --no-edge-alpha-color            (off)
+  --edge-alpha-brightness F                                      (1.0)
+      Same two knobs, for the alpha outline pass.
+
+  --edge-color-both #RRGGBB
+  --edge-brightness-both F
+      Sets both the Scharr and alpha versions in one flag. Ordinary
+      left-to-right override rules apply: put a more specific
+      --edge-alpha-color AFTER this if you want it to win for alpha only.

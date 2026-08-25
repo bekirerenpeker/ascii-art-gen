@@ -102,6 +102,7 @@ improvement on a dull photo and it needs no tuning.
 | `--font-path` | `PATH` | built-in | TTF/OTF used to draw the glyphs |
 | `--font-match-size` | `N` | `16` | Glyph height in pixels **used for matching**. Bigger = finer shape matching, slower |
 | `--font-render-size` | `N` | auto | Glyph height in pixels **used for the output image**. Bigger = crisper PNG |
+| `--font-bold` | `[F]` | `0` | Thickens the outline before rasterising, output only. Bare flag means `1` |
 
 Only a height is given. **Width is always half the height** — the 1:2 cell aspect is baked in
 so it can't be broken by accident.
@@ -158,6 +159,7 @@ thing everywhere:
 |---|---|---|---|
 | `--algo-allow-background` | — | off | Solve a *second* colour per cell instead of drawing on one backdrop. Much higher fidelity, but the output stops looking like text and starts looking like coloured blocks |
 | `--algo-brightness-gamma` | `F` | `1.0` | Below 1 brightens the foreground. See [below](#why-brightness-is-applied-twice) |
+| `--resample-filter` | `auto\|box\|triangle` | `auto` | How the source gets resized to working resolution. `auto` picks real cubic interpolation by direction (Mitchell shrinking, Catmull-Rom growing); `box`/`triangle` force one filter both ways — mostly a stylistic choice, not a quality one |
 
 ### `--algo bitmask`
 
@@ -165,6 +167,12 @@ thing everywhere:
 |---|---|---|---|
 | `--algo-bitmask-softness` | `F` | `0.0` | Blend a blurred match into the sharp one, so a stroke a pixel off still counts. **Measured as unhelpful** — see [Known gaps](#known-gaps) |
 | `--algo-bitmask-blur-radius` | `N` | `1` | How far a stroke may drift, in cell pixels |
+
+### `--algo ramp`
+
+| Flag | Arg | Default | What it does |
+|---|---|---|---|
+| `--algo-ramp-chars` | `"STR"` | `" .:-=+*#%@"` | The ordered light-to-dark ramp it steps through |
 
 ### `--algo structure`
 
@@ -176,6 +184,9 @@ thing everywhere:
 | `--algo-structure-orient-blocks` | `WxH` | `2x4` | Grid the cell is cut into before counting directions. Coarse on purpose |
 | `--algo-structure-mass-blocks` | `WxH` | `8x16` | Grid for the ink-position term. One pixel per block by default |
 | `--algo-structure-bins` | `N` | `4` | How finely direction is split, over a half turn |
+| `--algo-structure-gradient-stride` | `N` | `1` | Speed/quality trade. Above 1, samples the gradient on a stride-N grid instead of every pixel; ink placement still reads every pixel. `1` changes nothing |
+| `--algo-structure-fast-atan` / `--no-...` | — | on | Polynomial approximation of the gradient's angle instead of the exact one. Measured ~40% cheaper for a ~0.14% cell-level glyph change on a real photo — on by default; `--no-algo-structure-fast-atan` opts back into the exact path |
+| `--algo-structure-flat-threshold` | `F` | `0.02` | Below this, a tile's shape terms are judged too small to discriminate, and glyph choice drops to a binary search by ink coverage, tie-broken by how centred the candidate's own ink is. Negative disables this path entirely |
 
 `orientation-weight` is the real dial. At `0` you get pure surface fidelity; at `1.0`
 everything turns into heavy outlines and flat panels go mushy. `0.25` is the balance.
@@ -214,7 +225,7 @@ Three different sizes, and they're easy to confuse. They resolve **in this order
 | `--image-scale` | `F` | `1.0` | Art size as a fraction of what's left |
 | `--image-aspect` | `R` | off | Reshape the final picture, e.g. `16:9` |
 
-**`--image-aspect` only ever grows the canvas.** The short side is extended with backdrop �
+**`--image-aspect` only ever grows the canvas.** The short side is extended with backdrop �
 nothing cropped, art never resampled. It's the alternative to naming a pixel size: a square
 source becomes a 16:9 wallpaper at full glyph resolution rather than being squeezed to fit.
 Reach for it when a fixed `--image-width` would throw away resolution you just paid for with
@@ -223,7 +234,7 @@ the shape.
 
 **The art is fitted into a box *inside* the canvas, not into the canvas itself.** `margin`
 insets by a fixed number of pixels, `scale` then takes a fraction of what remains. Whatever
-is left over stays backdrop � and that leftover is what `--image-align` positions within. At
+is left over stays backdrop � and that leftover is what `--image-align` positions within. At
 `scale 1.0` with `fit contain` the art fills one axis completely, so alignment has nothing to
 do on that axis; shrink the box and it becomes meaningful.
 
@@ -291,9 +302,11 @@ Detects edges and stamps directional characters (`-` `/` `|` `\`) over the chose
 | Flag | Arg | Default | What it does |
 |---|---|---|---|
 | `--edge` | `NAME` | `none` | `none` or `scharr` |
-| `--edge-threshold` | `F` | `0.3` | How strong an edge must be. The "how much edging" dial |
-| `--edge-coherence` | `F` | `0.55` | How much the cell must agree on one direction. Rejects texture |
-| `--edge-subsamples` | `N` | `4` | Gradient samples per cell per axis |
+| `--edge-threshold` | `F` | `0.15` | How strong an edge must be, as a MEAN over the cell (not its peak pixel) — reads lower than a peak-based detector's default |
+| `--edge-coherence` | `F` | `0.55` | How much the cell must agree on one direction, 0–1. Rejects texture |
+| `--edge-subsamples` | `N` | `4` | Gradient samples per cell per axis. Cost grows with the square |
+| `--edge-nms` / `--no-edge-nms` | — | on | Non-maximum suppression: keeps a cell's edge only if it's the local peak across the line. What keeps an outline one character wide instead of three or four |
+| `--edge-hysteresis` | `F` | `0.5` | A cell too faint for `--edge-threshold` alone still survives if it clears `threshold * F` AND touches a cell that met the full threshold. `1.0` turns this off |
 
 **Off by default, and that's deliberate.** `bitmask` and `structure` already match glyph shape
 across the whole charset; overwriting their choice with one of four characters throws away
@@ -309,6 +322,35 @@ previously produced no edges at all; it now produces all four directions.
 
 One consequence: if the charset grows, any glyph atlas used for **rendering** must be built
 after `--edge` runs, not before. The atlas that drove selection does not need rebuilding.
+
+### Alpha outline
+
+A second, separate edge pass, applied *after* `--edge scharr` and overwriting anything Scharr
+already stamped in the same cell. Only does something on a source that actually carries
+transparency (a sprite, a logo, a rendered product shot) — there the alpha channel already
+*is* the object's exact silhouette, nothing to infer from brightness the way Scharr has to.
+
+| Flag | Arg | Default | What it does |
+|---|---|---|---|
+| `--edge-alpha` / `--no-edge-alpha` | — | off | Reads the source's own alpha channel — gone by the time Scharr runs. No-op (with a note) on a source with no alpha |
+| `--edge-alpha-threshold` | `F` | `0.5` | How much alpha has to swing across a cell. Higher than Scharr's default on purpose — a real alpha edge is close to a hard 0-to-255 step |
+| `--edge-alpha-coherence` | `F` | `0.6` | Same meaning as `--edge-coherence`, applied to the alpha gradient's direction |
+
+Shares `--edge-subsamples` and `--edge-hysteresis` with Scharr.
+
+### Edge colour
+
+Only the glyph's ink is touched — background stays whatever the selector (or `--backdrop`)
+already gave the cell. Scharr and alpha outline colour independently.
+
+| Flag | Arg | Default | What it does |
+|---|---|---|---|
+| `--edge-color` / `--no-edge-color` | `#RRGGBB` | off | Fixed colour for Scharr's stamped cells. Off inherits the selector's own colour |
+| `--edge-brightness` | `F` | `1.0` | Gain on Scharr's stamped cells, applied after `--edge-color` |
+| `--edge-alpha-color` / `--no-edge-alpha-color` | `#RRGGBB` | off | Same, for the alpha outline pass |
+| `--edge-alpha-brightness` | `F` | `1.0` | Same, for the alpha outline pass |
+| `--edge-color-both` | `#RRGGBB` | — | Sets both Scharr and alpha colour in one flag. Put a more specific `--edge-alpha-color` after it to override alpha only |
+| `--edge-brightness-both` | `F` | — | Sets both Scharr and alpha brightness in one flag |
 
 ---
 
@@ -365,6 +407,8 @@ the border around the picture always match.
 | `--out` | `PATH` | — | Write here. **Repeatable** — every one is produced |
 | `--stdout` / `--no-stdout` | — | auto | Print to the terminal. On by default when no `--out` is given |
 | `--color` | `MODE` | `truecolor` | `truecolor` · `ansi16` · `none` |
+| `--png-compression` | `N` | `8` | `0` fastest/largest, `9` slowest/smallest. Always lossless |
+| `--render-detail` | `LEVEL` | unset | `test`/`mid`/`high` — one dial for glyph render size + PNG effort together (16/32/64px). Doesn't touch grid size |
 | `--overwrite` | — | off | Allow replacing an existing file |
 
 Format comes from the extension:
@@ -611,8 +655,19 @@ Fields marked **→** already exist in the engine and are passed straight throug
 |---|---|---|
 | name | enum: none/scharr | none |
 | subsamples | int | 4 |
-| threshold | float | 0.3 |
+| threshold | float | 0.15 |
 | coherence | float | 0.55 |
+| hysteresis | float | 0.5 |
+| nms | bool | true |
+| color_set | bool | false |
+| color | `RGB` | `{255,255,255}` |
+| brightness | float | 1.0 |
+| alpha_outline | bool | false |
+| alpha_threshold | float | 0.5 |
+| alpha_coherence | float | 0.6 |
+| alpha_color_set | bool | false |
+| alpha_color | `RGB` | `{255,255,255}` |
+| alpha_brightness | float | 1.0 |
 
 ### AlgoOptions → `BitmaskOptions`, `StructureOptions`, `CellColorOptions`
 | Field | Type | Default |
@@ -628,6 +683,11 @@ Fields marked **→** already exist in the engine and are passed straight throug
 | structure_orient_blocks | `{w,h}` | `{2,4}` |
 | structure_mass_blocks | `{w,h}` | `{8,16}` |
 | structure_bins | int | 4 |
+| structure_gradient_stride | int | 1 |
+| structure_fast_atan | bool | true |
+| structure_flat_threshold | float | 0.02 |
+| ramp_chars | `string` | `" .:-=+*#%@"` |
+| resample_filter | enum: auto/box/triangle | auto |
 
 ### BackdropOptions → `CellBuffer::suggestedBackground`
 | Field | Type | Default |
@@ -647,6 +707,11 @@ Fields marked **→** already exist in the engine and are passed straight throug
 | image_width / height | int | 0 (natural) |
 | image_fit | enum: none/width/height/contain/cover/stretch | contain |
 | image_align | enum: 9 positions | center |
+| image_margin | int | 0 |
+| image_scale | float | 1.0 |
+| image_aspect | `{w,h}` | off |
+| png_compression | int | 8 |
+| render_detail | enum: unset/test/mid/high | unset |
 
 ### Top-level
 | Field | Type | Default |

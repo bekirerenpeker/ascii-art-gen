@@ -3,11 +3,15 @@ asciigen -- backdrop
 The colour behind everything. Filled into the grid AND used as the padding
 around the picture, so blanked cells and the border always match.
 
-  --backdrop MODE                                               (none)
+  --backdrop MODE                                        (transparent)
 
-      none        black
-      auto        taken from the picture itself
-      #RRGGBB     exactly this colour
+      none         black
+      auto         taken from the picture itself
+      transparent  no fill at all -- see TRANSPARENT below. The default for
+                   a bare invocation; every preset that cares about the
+                   backdrop sets its own mode, so this is only ever seen
+                   unstyled.
+      #RRGGBB      exactly this colour
 
   --backdrop-darken F                                            (0.15)
       auto only. How far down from the picture's own colour.
@@ -15,6 +19,10 @@ around the picture, so blanked cells and the border always match.
 
   --backdrop-luma-threshold F                                      (40)
       auto only. Cells dimmer than this do not count toward the average.
+      A 0-255 brightness, so 40 is "darker than about 15% grey".
+      15  counts almost everything, backdrops come out near-black
+      40  default
+      90  only genuinely bright cells; strong, saturated backdrops
 
 
 HOW auto PICKS
@@ -37,3 +45,21 @@ WHY YOU WANT ONE
   Cells that --grid-despeckle blanked still carry a background colour. Leave
   that black against a non-black canvas and they punch visible holes in the
   picture. Setting a backdrop fills them to match.
+
+
+TRANSPARENT
+
+  none is still a colour -- black, painted the same as any other --backdrop
+  value. transparent is different: it never emits a background escape at
+  all, for any cell, so nothing is painted and your terminal's own
+  background shows through everywhere, exactly like ordinary unstyled text
+  sitting on top of your theme.
+
+  Terminal and .ans output only. A PNG has no "your terminal's background"
+  to fall back to, so image output under transparent renders exactly as
+  none would -- solid black where nothing else was drawn.
+
+  --algo-allow-background solves a real second colour per cell (the glyph's
+  own "paper"), which transparent has nothing to substitute for -- combine
+  the two and every cell's paper colour is simply not drawn, which reads as
+  broken rather than stylistic. Use one or the other.

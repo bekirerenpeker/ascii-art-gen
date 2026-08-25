@@ -1,3 +1,4 @@
+#include "core/Profiler.hpp"
 #include "bitmap/Bitmask.hpp"
 #include "bitmap/Resample.hpp"
 #include "dithering/Dithering.hpp"
@@ -21,17 +22,26 @@ void generate(
     const int glyphCount = atlas.glyphCount();
 
     if (cellPx <= 0 || glyphCount <= 0 || outBuffer.width() <= 0 || outBuffer.height() <= 0) return;
+    ASCIIGEN_PROFILE("Bitmask::generate", "select");
+
 
     // Coverage is used as a weight rather than thresholded to 1-bit: downsampled
     // antialiased glyphs peak well below 255, so any fixed cutoff throws most of
     // the shape away.
+    //
+    // B2: maskF is the same masks as floats, built once here instead of a byte
+    // load + /255.f on every pixel, per glyph, per cell in the loop below (the
+    // main cost this glyph-scoring pass has).
     std::vector<float> inkWeight(glyphCount, 0.f);
     std::vector<float> inkWeightSq(glyphCount, 0.f);
+    std::vector<float> maskF((size_t)glyphCount * (size_t)cellPx);
     float maxCoverage = 0.f;
     for (int g = 0; g < glyphCount; g++) {
         const uint8_t* mask = atlas.getGlyphBegin(g);
+        float* mf = maskF.data() + (size_t)g * (size_t)cellPx;
         for (int i = 0; i < cellPx; i++) {
             const float a = mask[i] / 255.f;
+            mf[i] = a;
             inkWeight[g] += a;
             inkWeightSq[g] += a * a;
         }
@@ -44,6 +54,18 @@ void generate(
     // single heaviest glyph.
     if (maxCoverage <= 0.f) maxCoverage = 1.f;
 
+    // B1: wMean and wStd depend only on g, not on the cell being scored, but sat
+    // inside the per-cell glyph loop below regardless -- 45,700 redundant
+    // recomputations of the same value per glyph, including a sqrt each. Built
+    // once here alongside inkWeight instead.
+    std::vector<float> wMeanByGlyph(glyphCount, 0.f);
+    std::vector<float> wStdByGlyph(glyphCount, 0.f);
+    for (int g = 0; g < glyphCount; g++) {
+        const float wMean = inkWeight[g] / cellPx;
+        wMeanByGlyph[g] = wMean;
+        wStdByGlyph[g] = std::sqrt(std::max(0.f, inkWeightSq[g] - cellPx * wMean * wMean));
+    }
+
     // Blurred twin of every glyph mask, built once. Matching these instead of the
     // raw masks is what buys misalignment tolerance: a stroke a pixel off still
     // overlaps, where the sharp masks would score it as a total miss.
@@ -52,16 +74,20 @@ void generate(
     std::vector<float> blurMaskMean(glyphCount, 0.f);
     std::vector<float> blurMaskStd(glyphCount, 0.f);
 
+    // F2: blur's own internal scratch buffer, reused across every call below
+    // (once per glyph here, once per cell further down) instead of allocated
+    // fresh each time.
+    std::vector<float> blurScratch;
+
     if (soft) {
         blurMask.resize((size_t)glyphCount * (size_t)cellPx);
-        std::vector<float> sharp(cellPx);
 
         for (int g = 0; g < glyphCount; g++) {
-            const uint8_t* mask = atlas.getGlyphBegin(g);
-            for (int i = 0; i < cellPx; i++) sharp[i] = mask[i] / 255.f;
-
+            // B2: maskF already holds this glyph's mask as floats -- no need
+            // for a second, separate conversion here.
+            const float* sharp = maskF.data() + (size_t)g * (size_t)cellPx;
             float* dst = blurMask.data() + (size_t)g * (size_t)cellPx;
-            ImageFilters::blur(sharp.data(), dst, atlasW, atlasH, opts.blurRadius);
+            ImageFilters::blur(sharp, dst, atlasW, atlasH, opts.blurRadius, blurScratch);
 
             float sum = 0.f, sumSq = 0.f;
             for (int i = 0; i < cellPx; i++) sum += dst[i], sumSq += dst[i] * dst[i];
@@ -75,20 +101,30 @@ void generate(
     // One resample for the whole frame at atlas resolution, then dither it: the
     // plane is where tones actually get quantised down to glyph coverages.
     Image plane;
-    Resample::toGrid(image, plane, outBuffer.width() * atlasW, outBuffer.height() * atlasH);
+    Resample::toGrid(
+        image, plane, outBuffer.width() * atlasW, outBuffer.height() * atlasH, opts.resampleFilter
+    );
     Dithering::apply(plane, atlasW, atlasH);
 
     std::vector<RGB> tile(cellPx);
     std::vector<float> tileLuma(cellPx);
     std::vector<float> blurLuma(soft ? cellPx : 0);
 
+    // toGrid always hands back a 3-channel plane sized exactly to the grid, so
+    // the tile gather can walk it directly instead of bounds-checking and
+    // re-branching on depth once per subpixel.
+    const byte* const planePx = plane.pixels;
+    const size_t planeStride = (size_t)plane.width * 3;
+
     for (int cy = 0; cy < outBuffer.height(); cy++) {
         for (int cx = 0; cx < outBuffer.width(); cx++) {
             float sumL = 0;
             for (int py = 0; py < atlasH; py++) {
-                for (int px = 0; px < atlasW; px++) {
-                    const PixelColor p = plane.getAt(cx * atlasW + px, cy * atlasH + py);
-                    const RGB c {p.r, p.g, p.b};
+                const byte* p = planePx + (size_t)(cy * atlasH + py) * planeStride
+                                + (size_t)cx * atlasW * 3;
+
+                for (int px = 0; px < atlasW; px++, p += 3) {
+                    const RGB c {p[0], p[1], p[2]};
                     const int i = px + py * atlasW;
                     tile[i] = c;
                     tileLuma[i] = luma(c);
@@ -108,7 +144,9 @@ void generate(
             // the correlation would be measuring detail at different scales.
             float blurMean = 0.f, blurStd = 0.f;
             if (soft) {
-                ImageFilters::blur(tileLuma.data(), blurLuma.data(), atlasW, atlasH, opts.blurRadius);
+                ImageFilters::blur(
+                    tileLuma.data(), blurLuma.data(), atlasW, atlasH, opts.blurRadius, blurScratch
+                );
 
                 float sum = 0.f;
                 for (int i = 0; i < cellPx; i++) sum += blurLuma[i];
@@ -127,7 +165,9 @@ void generate(
             int bestGlyph = 0;
 
             for (int g = 0; g < glyphCount; g++) {
-                const uint8_t* mask = atlas.getGlyphBegin(g);
+                // B2: the float mask, precomputed once above -- no per-pixel
+                // byte load + /255.f here anymore.
+                const float* mf = maskF.data() + (size_t)g * (size_t)cellPx;
                 const float w = inkWeight[g];
 
                 float score;
@@ -136,7 +176,7 @@ void generate(
                     // luminance phenomenon, and a hue change at constant
                     // brightness is not an edge the eye reads as one.
                     float inkL = 0;
-                    for (int i = 0; i < cellPx; i++) inkL += tileLuma[i] * (mask[i] / 255.f);
+                    for (int i = 0; i < cellPx; i++) inkL += tileLuma[i] * mf[i];
 
                     const float m = cellPx - w;
                     const float paperL = sumL - inkL;
@@ -150,10 +190,12 @@ void generate(
                     // the heaviest glyph. Match mean coverage to mean brightness
                     // instead, and let shape correlation settle the rest.
                     float lw = 0;
-                    for (int i = 0; i < cellPx; i++) lw += tileLuma[i] * (mask[i] / 255.f);
+                    for (int i = 0; i < cellPx; i++) lw += tileLuma[i] * mf[i];
 
-                    const float wMean = w / cellPx;
-                    const float wStd = std::sqrt(std::max(0.f, inkWeightSq[g] - cellPx * wMean * wMean));
+                    // B1: precomputed alongside inkWeight above -- these depend
+                    // only on g, not on this cell.
+                    const float wMean = wMeanByGlyph[g];
+                    const float wStd = wStdByGlyph[g];
 
                     const float coverErr = wMean / maxCoverage - lumaMean / 255.f;
 

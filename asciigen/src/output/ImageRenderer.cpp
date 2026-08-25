@@ -1,9 +1,11 @@
+#include "core/Profiler.hpp"
 #include "output/ImageRenderer.hpp"
 #include "file_management/ImageManager.hpp"
 #include "stb/stb_image_resize2.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace ImageRenderer {
 
@@ -12,8 +14,18 @@ Image render(const CellBuffer& buffer, const GlyphAtlas& atlas)
     const int cellW = atlas.cellWidth();
     const int cellH = atlas.cellHeight();
     if (buffer.width() <= 0 || buffer.height() <= 0 || cellW <= 0 || cellH <= 0) return Image();
+    ASCIIGEN_PROFILE("ImageRenderer::render", "output");
+
 
     Image img(buffer.width() * cellW, buffer.height() * cellH, 3);
+
+    // Written through a row pointer rather than setAt. The output is the largest
+    // buffer the program touches, and setAt would bounds-check, re-branch on
+    // depth and recompute the address for every one of its pixels -- and because
+    // a byte store may alias the Image struct itself, reload width/height/depth
+    // as well. All of it is loop-invariant here by construction.
+    byte* const px = img.pixels;
+    const size_t rowStride = (size_t)img.width * 3;
 
     for (int cy = 0; cy < buffer.height(); cy++) {
         for (int cx = 0; cx < buffer.width(); cx++) {
@@ -26,18 +38,20 @@ Image render(const CellBuffer& buffer, const GlyphAtlas& atlas)
                                        ? atlas.getGlyphBegin(cell.glyphIndex)
                                        : nullptr;
 
+            const int br = cell.bg.r, bg = cell.bg.g, bb = cell.bg.b;
+            const int dr = cell.fg.r - br, dg = cell.fg.g - bg, db = cell.fg.b - bb;
+
             for (int y = 0; y < cellH; y++) {
-                for (int x = 0; x < cellW; x++) {
+                byte* out = px + (size_t)(cy * cellH + y) * rowStride + (size_t)cx * cellW * 3;
+                const uint8_t* row = glyph ? glyph + (size_t)y * cellW : nullptr;
+
+                for (int x = 0; x < cellW; x++, out += 3) {
                     // Coverage blends background toward foreground, the same as a
                     // terminal drawing the cell.
-                    const int a = glyph ? glyph[x + y * cellW] : 0;
-                    const PixelColor c {
-                        (byte)(cell.bg.r + (cell.fg.r - cell.bg.r) * a / 255),
-                        (byte)(cell.bg.g + (cell.fg.g - cell.bg.g) * a / 255),
-                        (byte)(cell.bg.b + (cell.fg.b - cell.bg.b) * a / 255),
-                        255
-                    };
-                    img.setAt(cx * cellW + x, cy * cellH + y, c);
+                    const int a = row ? row[x] : 0;
+                    out[0] = (byte)(br + dr * a / 255);
+                    out[1] = (byte)(bg + dg * a / 255);
+                    out[2] = (byte)(bb + db * a / 255);
                 }
             }
         }
@@ -49,6 +63,8 @@ Image render(const CellBuffer& buffer, const GlyphAtlas& atlas)
 Image scale(const Image& src, int width, int height)
 {
     if (!src.pixels || width <= 0 || height <= 0) return Image();
+    ASCIIGEN_PROFILE("ImageRenderer::scale", "output");
+
 
     Image out(width, height, src.depth);
 
@@ -74,11 +90,28 @@ Image compose(
 )
 {
     if (canvasW <= 0 || canvasH <= 0) return Image();
+    ASCIIGEN_PROFILE("ImageRenderer::compose", "output");
+
 
     Image out(canvasW, canvasH, 3);
-    for (int y = 0; y < canvasH; y++)
-        for (int x = 0; x < canvasW; x++)
-            out.setAt(x, y, {background.r, background.g, background.b, 255});
+
+    // One row is filled a pixel at a time and the rest are copied from it, so the
+    // per-pixel work happens once per canvas instead of once per row. A grey
+    // backdrop -- which the default black is -- degenerates to a single memset.
+    byte* const dst = out.pixels;
+    const size_t rowBytes = (size_t)canvasW * 3;
+
+    if (background.r == background.g && background.g == background.b) {
+        std::memset(dst, background.r, rowBytes * canvasH);
+    }
+    else {
+        for (int x = 0; x < canvasW; x++) {
+            dst[x * 3 + 0] = background.r;
+            dst[x * 3 + 1] = background.g;
+            dst[x * 3 + 2] = background.b;
+        }
+        for (int y = 1; y < canvasH; y++) std::memcpy(dst + (size_t)y * rowBytes, dst, rowBytes);
+    }
 
     if (!src.pixels) return out;
 
@@ -103,11 +136,27 @@ Image compose(
     case Align::BottomRight: offX = m + slackX, offY = m; break;
     }
 
-    // Negative offsets are how a picture larger than the canvas gets cropped:
-    // setAt drops anything landing outside. Note y counts up from the bottom, so
-    // "Top" is the far end of the slack, not zero.
-    for (int y = 0; y < src.height; y++)
-        for (int x = 0; x < src.width; x++) out.setAt(offX + x, offY + y, src.getAt(x, y));
+    // Negative offsets are how a picture larger than the canvas gets cropped, so
+    // the visible span is clipped up front and each row copied whole. Note y
+    // counts up from the bottom, so "Top" is the far end of the slack, not zero.
+    const int x0 = std::max(0, offX), x1 = std::min(canvasW, offX + src.width);
+    const int y0 = std::max(0, offY), y1 = std::min(canvasH, offY + src.height);
+    if (x1 <= x0 || y1 <= y0) return out;
+
+    if (src.depth == 3) {
+        const size_t span = (size_t)(x1 - x0) * 3;
+        for (int y = y0; y < y1; y++) {
+            const byte* s = src.pixels + ((size_t)(y - offY) * src.width + (x0 - offX)) * 3;
+            std::memcpy(dst + (size_t)y * rowBytes + (size_t)x0 * 3, s, span);
+        }
+    }
+    else {
+        // Any other depth still has to go through getAt for its grey and alpha
+        // expansion; render() only ever produces 3, so this is the rare path.
+        for (int y = y0; y < y1; y++)
+            for (int x = x0; x < x1; x++)
+                out.setAt(x, y, src.getAt(x - offX, y - offY));
+    }
 
     return out;
 }

@@ -2,6 +2,7 @@
 #include "Help.hpp"
 #include "Options.hpp"
 #include "Pipeline.hpp"
+#include "core/Profiler.hpp"
 #include "Test.hpp"
 #include <algorithm>
 #include <cctype>
@@ -40,5 +41,31 @@ int main(int argc, char* argv[])
     });
     options.input.passthrough = ext == ".ans" || ext == ".txt";
 
-    return Pipeline::run(options);
+    // Started before the pipeline and written after, so the outermost span
+    // covers everything the run actually did.
+    if (!options.profilePath.empty()) {
+        Profiler::begin();
+
+        // Stamped into the trace so it identifies itself on screen. Without this
+        // two runs look identical in the viewer, and there is no way to tell a
+        // Debug trace from a Release one -- which is exactly the confusion that
+        // makes timings look wrong.
+        std::string command;
+        for (int i = 1; i < argc; i++) command += std::string(i > 1 ? " " : "") + argv[i];
+
+        Profiler::describe("command", command);
+        Profiler::describe("build", ASCIIGEN_BUILD_TYPE);
+    }
+
+    const int status = Pipeline::run(options);
+
+    if (!options.profilePath.empty()) {
+        if (Profiler::writeTo(options.profilePath))
+            std::cerr << "asciigen: trace written to " << options.profilePath << "\n"
+                      << "  open it at https://ui.perfetto.dev or https://speedscope.app\n";
+        else
+            std::cerr << "asciigen: could not write trace to " << options.profilePath << "\n";
+    }
+
+    return status;
 }

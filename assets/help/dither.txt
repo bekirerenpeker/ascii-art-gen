@@ -16,10 +16,25 @@ can suggest more tones than it really has. Off by default.
 
   --dither-flat-contrast F                                        (10)
       Below this much local variation, dither at full strength.
+      5  only the flattest sky     10  default     20  most of the picture
 
   --dither-edge-contrast F                                        (45)
       Above this, do not dither at all. Raise it to let dithering reach
       further into textured areas; lower it to protect more.
+      25  protective     45  default     80  dither almost everywhere
+
+
+  BOTH ARE MEASURED IN TONE LEVELS
+
+  The number is the standard deviation of brightness in the neighbourhood,
+  on the same 0-255 scale as the pixels. That makes them readable:
+
+    2-8     clear sky, a painted wall, studio backdrop
+    15-30   fabric, foliage, gravel, skin texture
+    50+     a hard edge -- the boundary of an object
+
+  So the defaults say: dither freely below 10, not at all above 45, and fade
+  between. Anything in the middle gets a proportional amount.
 
 
 LEAVE --dither-adaptive ON

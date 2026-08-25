@@ -23,9 +23,25 @@ SHARED BY EVERY ALGORITHM
   --algo-brightness-gamma F                                      (1.0)
       Below 1 brightens the foreground. See --help grid for why output is
       dimmer than the photo.
+      0.7  strong lift     0.85  gentle     1.0  off
 
   --algo-ramp-chars "STR"                             (" .:-=+*#%@")
       The ordered list ramp steps through, light to dark.
+
+  --resample-filter NAME                          auto | box | triangle
+                                                                  (auto)
+      How the source gets resized to the working resolution every algorithm
+      reads from. auto picks a real cubic filter by direction -- Mitchell
+      shrinking, Catmull-Rom growing -- both sharper and smoother than a
+      plain average, especially when growing a small source. box and
+      triangle force one filter both ways instead: cheaper, and mostly a
+      stylistic choice rather than a quality one -- try it, don't assume
+      it'll matter. box is not a reconstruction of an older, simpler filter
+      this tool used to use -- measured meaningfully different even from
+      that -- so don't reach for it expecting "the safe old behaviour".
+      auto      default, real cubic interpolation
+      triangle  cheaper, closer to auto's own output than box is
+      box       cheapest, the most different from auto of the three
 
 
 --algo bitmask
@@ -36,7 +52,10 @@ SHARED BY EVERY ALGORITHM
       above 0 scored worse. Left in as a dial, not a recommendation.
 
   --algo-bitmask-blur-radius N                                     (1)
-      How far a stroke may drift, in cell pixels.
+      How far a stroke may drift, in cell pixels. A cell is 8x16 at the
+      default --font-match-size, so 2 is already a quarter of its width.
+      Only does anything when --algo-bitmask-softness is above 0.
+      1  default     2  loose     3+  shapes stop mattering
 
 
 --algo structure
@@ -49,11 +68,18 @@ SHARED BY EVERY ALGORITHM
 
   --algo-structure-mass-weight F                                 (1.0)
       How much WHERE THE INK SITS counts. This is what resolves shading.
+      Read it against orientation-weight -- only the ratio matters.
+      0.5  direction leads     1.0  balanced     2.0  placement leads
 
   --algo-structure-tone-weight F                                 (4.0)
       Pull toward glyphs whose ink coverage matches the cell's brightness.
       Both shape terms ignore how much ink there is, so without this you
       get the right shapes at the wrong exposure.
+
+      Deliberately the largest of the three: getting brightness wrong is
+      more obvious than getting a shape slightly wrong.
+      1   shape wins, exposure drifts     4  default
+      8   near enough a brightness ramp with shapes as a tie-break
 
   --algo-structure-orient-blocks WxH                             (2x4)
       Grid the cell is cut into before directions are counted. Coarse on
@@ -65,4 +91,40 @@ SHARED BY EVERY ALGORITHM
       scorer -- which is exactly how surfaces turn to mush.
 
   --algo-structure-bins N                                          (4)
-      How finely direction is split, over a half turn.
+      How finely direction is split, over a half turn. 4 bins is 45 degrees
+      each, which is exactly what / | \ and - can express -- so finer
+      binning describes angles no glyph can actually draw.
+      4  default     8  finer, and slower for little gain
+
+  --algo-structure-gradient-stride N                               (1)
+      Speed/quality trade, off at the default. Above 1, the per-pixel
+      gradient (the orientation term's input) is only computed on a
+      stride-N grid inside each cell; ink placement (the mass term) still
+      reads every pixel regardless. Measured ~10% off Structure::generate
+      at stride 2, and changed the chosen glyph on ~9.6% of cells on a real
+      photo -- noticeable if you go looking, not always noticeable at a
+      glance. Try it, don't just leave it on.
+      1  every pixel, default     2  quarter the gradient samples
+
+  --algo-structure-fast-atan                                        (on)
+      Speed/quality trade, on by default -- the one exception on this page
+      to "off unless proven worth it". Replaces the exact angle calculation
+      in the gradient with a polynomial approximation good to a fraction of
+      a degree -- far smaller than a single bin's 45-degree width. Measured
+      ~40% off buildDescriptor's share of Structure::generate, and changed
+      the chosen glyph on ~0.14% of cells on a real photo: the biggest cost
+      cut of any single change on this page, for a difference small enough
+      to judge worth taking by default.
+      --no-algo-structure-fast-atan   the exact std::atan2 + std::fmod path
+
+  --algo-structure-flat-threshold F                              (0.02)
+      Below this, a tile's orientation and mass terms are both judged too
+      small to discriminate between glyphs, and picking one drops to a
+      binary search by ink coverage instead of scoring all of them, tie-
+      broken by which candidate's own ink sits closest to centred -- a plain
+      "." reads better than a stray-looking mark on an otherwise flat patch.
+      Measured on a real photo: ~47% of cells qualify, and ~0.8% of all
+      cells picked a different (more centred) glyph because of it.
+      0     only an exactly-uniform tile -- vanishingly rare on a real photo
+      0.02  default
+      a negative value disables this path entirely

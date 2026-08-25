@@ -1,5 +1,7 @@
 #include "Pipeline.hpp"
+#include "core/Profiler.hpp"
 #include "Assets.hpp"
+#include "bitmap/Resample.hpp"
 #include "bitmap/Bitmask.hpp"
 #include "bitmap/Ramp.hpp"
 #include "bitmap/Structure.hpp"
@@ -21,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <set>
 
 using namespace App;
@@ -203,24 +206,44 @@ int run(const Options& opts)
 {
     if (opts.input.passthrough) return passthrough(opts);
 
-    Image img = ImageManager::loadImage(opts.input.path);
+    ASCIIGEN_PROFILE("run", "pipeline");
+
+    Image img;
+    {
+        ASCIIGEN_PROFILE("load", "io");
+        img = ImageManager::loadImage(opts.input.path);
+    }
     if (!img.pixels) return 3;
 
-    // Before selection, so they change which glyph gets chosen rather than how
-    // the result is drawn.
-    if (opts.source.autoLevels)
-        ImageFilters::autoLevels(img, opts.source.autoLevelsLow, opts.source.autoLevelsHigh);
-    if (opts.source.levels)
-        ImageFilters::levels(img, opts.source.levelsBlack, opts.source.levelsWhite, opts.source.levelsGamma);
-    if (opts.source.contrast != 1.f) ImageFilters::contrast(img, opts.source.contrast);
-    if (opts.source.blurRadius > 0) ImageFilters::blur(img, opts.source.blurRadius);
-    if (opts.source.sharpenAmount > 0.f)
-        ImageFilters::unsharpMask(img, opts.source.sharpenAmount, opts.source.sharpenRadius);
+    // Extracted before anything downstream can touch img: the resample for
+    // filters below always produces a 3-channel plane, so this is the only
+    // point where the source's own alpha channel still exists.
+    Image alphaSource;
+    if (opts.edge.alphaOutline) {
+        if (img.depth == 4 || img.depth == 2) {
+            alphaSource = Image(img.width, img.height, 1);
+
+            const int d = img.depth;
+            const byte* src = img.pixels + (d - 1);
+            byte* dst = alphaSource.pixels;
+            const size_t n = (size_t)img.width * (size_t)img.height;
+
+            for (size_t i = 0; i < n; i++, src += d, dst++) *dst = *src;
+        }
+        else {
+            std::cerr << "asciigen: --edge-alpha requested but the source has no alpha "
+                         "channel; skipped.\n";
+        }
+    }
 
     int cols = 0, rows = 0;
     resolveGridSize(opts, img, cols, rows);
 
-    Charset charset = buildCharset(opts);
+    Charset charset;
+    {
+        ASCIIGEN_PROFILE("buildCharset", "font");
+        charset = buildCharset(opts);
+    }
 
     CellBuffer buffer;
     buffer.setSize(cols, rows);
@@ -239,7 +262,21 @@ int run(const Options& opts)
         .algorithm = Edges::Algorithm::Scharr,
         .subsamples = opts.edge.subsamples,
         .threshold = opts.edge.threshold,
-        .coherence = opts.edge.coherence
+        .coherence = opts.edge.coherence,
+        .hysteresis = opts.edge.hysteresis,
+        .nms = opts.edge.nms,
+        .colorSet = opts.edge.colorSet,
+        .color = opts.edge.color,
+        .brightness = opts.edge.brightness
+    };
+
+    Edges::alphaOptions = {
+        .enabled = opts.edge.alphaOutline,
+        .threshold = opts.edge.alphaThreshold,
+        .coherence = opts.edge.alphaCoherence,
+        .colorSet = opts.edge.alphaColorSet,
+        .color = opts.edge.alphaColor,
+        .brightness = opts.edge.alphaBrightness
     };
 
     const std::filesystem::path fontPath = resolveFont(opts);
@@ -248,7 +285,13 @@ int run(const Options& opts)
         return 7;
     }
 
-    Font font(fontPath);
+    std::unique_ptr<Font> fontHolder;
+    {
+        ASCIIGEN_PROFILE("Font::load", "font");
+        fontHolder = std::make_unique<Font>(fontPath);
+    }
+    Font& font = *fontHolder;
+
 
     // Width is half the height, always, so the cell grid can never be broken by
     // the choice of face.
@@ -258,16 +301,74 @@ int run(const Options& opts)
     // Fewer than two distinct shapes means there is nothing to choose between,
     // and the result is a uniform picture. Worth saying out loud -- the usual
     // cause is a charset the font simply does not cover.
-    if (distinctGlyphCount(matchAtlas) < 2) {
+    int distinct = 0;
+    {
+        ASCIIGEN_PROFILE("distinctGlyphCount", "font");
+        distinct = distinctGlyphCount(matchAtlas);
+    }
+
+    if (distinct < 2) {
         std::cerr << "asciigen: \"" << fontPath.filename().string()
                   << "\" has no glyphs for this charset, so the output will be blank.\n"
                   << "  pick a font that covers it, e.g.\n"
                   << "  --font-path C:/Windows/Fonts/CascadiaMono.ttf\n";
     }
 
+    // Ramp reads one sample per cell; everything else works at atlas resolution.
+    const int planeW = opts.algo.name == AlgoName::Ramp ? cols : cols * std::max(1, matchH / 2);
+    const int planeH = opts.algo.name == AlgoName::Ramp ? rows : rows * matchH;
+
+    Resample::Filter resampleFilter = Resample::Filter::Auto;
+    if (opts.algo.resampleFilter == ResampleFilterName::Box) resampleFilter = Resample::Filter::Box;
+    else if (opts.algo.resampleFilter == ResampleFilterName::Triangle)
+        resampleFilter = Resample::Filter::Triangle;
+
+    auto doResample = [&]() {
+        ASCIIGEN_PROFILE("resample for filters", "resample");
+        Image plane;
+        Resample::toGrid(img, plane, planeW, planeH, resampleFilter);
+        img = std::move(plane);
+    };
+
+    auto doFilters = [&]() {
+        ASCIIGEN_PROFILE("source filters", "filter");
+
+        if (opts.source.autoLevels)
+            ImageFilters::autoLevels(img, opts.source.autoLevelsLow, opts.source.autoLevelsHigh);
+        if (opts.source.levels)
+            ImageFilters::levels(
+                img, opts.source.levelsBlack, opts.source.levelsWhite, opts.source.levelsGamma
+            );
+        if (opts.source.contrast != 1.f) ImageFilters::contrast(img, opts.source.contrast);
+        if (opts.source.blurRadius > 0) ImageFilters::blur(img, opts.source.blurRadius);
+        if (opts.source.sharpenAmount > 0.f)
+            ImageFilters::unsharpMask(img, opts.source.sharpenAmount, opts.source.sharpenRadius);
+    };
+
+    // Whichever side has fewer pixels goes first. A source bigger than the
+    // plane (the common case) gets resampled down before filtering -- most of
+    // it would be smoothed away regardless, so filtering it in full is wasted
+    // work, and sharpening in particular is largely undone by the later
+    // averaging. A source smaller than the plane -- easy to hit at a large
+    // --grid-height, since the plane's size follows grid size, not the
+    // source's -- gets filtered first instead: resampling it up before
+    // filtering would mean filtering mostly-interpolated pixels the resample
+    // just invented, for no real detail gained. This is a genuinely different
+    // operation on different pixels either way, not just a speed choice --
+    // see optimizations.md's "plane is upsampled" entry.
+    if ((size_t)img.width * (size_t)img.height < (size_t)planeW * (size_t)planeH) {
+        doFilters();
+        doResample();
+    }
+    else {
+        doResample();
+        doFilters();
+    }
+
+
     switch (opts.algo.name) {
     case AlgoName::Ramp:
-        Ramp::generate(img, buffer, charset, opts.algo.rampChars);
+        Ramp::generate(img, buffer, charset, opts.algo.rampChars, resampleFilter);
         break;
 
     case AlgoName::Bitmask:
@@ -276,7 +377,8 @@ int run(const Options& opts)
             {.allowBackground = opts.algo.allowBackground,
              .brightnessGamma = opts.algo.brightnessGamma,
              .softness = opts.algo.bitmaskSoftness,
-             .blurRadius = opts.algo.bitmaskBlurRadius}
+             .blurRadius = opts.algo.bitmaskBlurRadius,
+             .resampleFilter = resampleFilter}
         );
         break;
 
@@ -292,25 +394,37 @@ int run(const Options& opts)
              .massWeight = opts.algo.structureMassWeight,
              .toneWeight = opts.algo.structureToneWeight,
              .allowBackground = opts.algo.allowBackground,
-             .brightnessGamma = opts.algo.brightnessGamma}
+             .brightnessGamma = opts.algo.brightnessGamma,
+             .gradientStride = opts.algo.structureGradientStride,
+             .fastAtan = opts.algo.structureFastAtan,
+             .flatThreshold = opts.algo.structureFlatThreshold,
+             .resampleFilter = resampleFilter}
         );
         break;
     }
 
     // May append the directional glyphs, so anything rasterised from the charset
     // has to come after this.
-    Edges::apply(img, buffer, charset);
+    {
+        ASCIIGEN_PROFILE("edges", "edges");
+        Edges::apply(img, buffer, charset, alphaSource);
+    }
 
-    if (opts.grid.despeckle > 0.f) CellFilters::despeckle(buffer, matchAtlas, opts.grid.despeckle);
+    {
+        ASCIIGEN_PROFILE("cell filters", "filter");
 
-    if (opts.grid.brightness != 1.f || opts.grid.gamma != 1.f)
-        CellFilters::brightness(buffer, opts.grid.brightness, opts.grid.gamma);
-    if (opts.grid.vibrance != 0.f) CellFilters::vibrance(buffer, opts.grid.vibrance);
+        if (opts.grid.despeckle > 0.f)
+            CellFilters::despeckle(buffer, matchAtlas, opts.grid.despeckle);
 
-    if (opts.grid.palette == PaletteName::Gruvbox)
-        CellFilters::paletteMap(buffer, Palettes::gruvbox(), opts.grid.paletteStrength);
-    else if (opts.grid.palette == PaletteName::Nord)
-        CellFilters::paletteMap(buffer, Palettes::nord(), opts.grid.paletteStrength);
+        if (opts.grid.brightness != 1.f || opts.grid.gamma != 1.f)
+            CellFilters::brightness(buffer, opts.grid.brightness, opts.grid.gamma);
+        if (opts.grid.vibrance != 0.f) CellFilters::vibrance(buffer, opts.grid.vibrance);
+
+        if (opts.grid.palette == PaletteName::Gruvbox)
+            CellFilters::paletteMap(buffer, Palettes::gruvbox(), opts.grid.paletteStrength);
+        else if (opts.grid.palette == PaletteName::Nord)
+            CellFilters::paletteMap(buffer, Palettes::nord(), opts.grid.paletteStrength);
+    }
 
     // Last, so the colour filters cannot shift the chosen backdrop, and so cells
     // blanked by despeckle carry it too rather than punching black holes.
@@ -324,11 +438,19 @@ int run(const Options& opts)
     // showing through wherever a glyph does not cover -- which reads as a dark
     // seam between every pair of blocks. The backdrop is still what pads the
     // picture; it just has no business inside the grid here.
-    if (opts.backdrop.mode != BackdropMode::None && !opts.algo.allowBackground)
+    //
+    // Transparent needs no fill at all -- the ANSI renderer is about to skip
+    // the background escape entirely, so whatever colour sat in the buffer
+    // would never be seen anyway.
+    if (opts.backdrop.mode != BackdropMode::None && opts.backdrop.mode != BackdropMode::Transparent
+        && !opts.algo.allowBackground)
         buffer.fillBackground(backdrop);
 
-    const std::string text =
-        AnsiRenderer::render(buffer, charset, {.depth = toDepth(opts.output.color)});
+    const std::string text = AnsiRenderer::render(
+        buffer, charset,
+        {.depth = toDepth(opts.output.color),
+         .transparentBackground = opts.backdrop.mode == BackdropMode::Transparent}
+    );
 
     if (opts.output.stdoutEnabled) {
         Terminal::enableAnsi();
@@ -337,6 +459,8 @@ int run(const Options& opts)
     }
 
     if (opts.output.paths.empty()) return 0;
+
+    ImageManager::setPngCompression(opts.output.pngCompression);
 
     GlyphAtlas renderAtlas;
     if (wantsImage(opts)) {

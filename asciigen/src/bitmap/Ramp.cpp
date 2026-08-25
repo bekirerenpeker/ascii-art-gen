@@ -8,7 +8,8 @@
 namespace Ramp {
 
 void generate(
-    const Image& image, CellBuffer& outBuffer, Charset& outCharset, const std::string& ramp
+    const Image& image, CellBuffer& outBuffer, Charset& outCharset, const std::string& ramp,
+    Resample::Filter resampleFilter
 )
 {
     outCharset = Charset(ramp);
@@ -17,7 +18,7 @@ void generate(
     // One sample per cell, so the plane is already at the granularity the glyph
     // choice quantises at -- the default 1x1 dither block is the right one here.
     Image plane;
-    Resample::toGrid(image, plane, outBuffer.width(), outBuffer.height());
+    Resample::toGrid(image, plane, outBuffer.width(), outBuffer.height(), resampleFilter);
     Dithering::apply(plane);
 
     for (int y = 0; y < outBuffer.height(); y++) {
