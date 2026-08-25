@@ -3,6 +3,7 @@
 #include "bitmap/Bitmask.hpp"
 #include "bitmap/Structure.hpp"
 #include "core/CellBuffer.hpp"
+#include "core/FrameProgress.hpp"
 #include "core/Image.hpp"
 #include "edges/EdgeField.hpp"
 #include <string>
@@ -38,6 +39,11 @@ struct FrameStorage
     Structure::Scratch structureScratch;   // only touched when --algo structure
     Bitmask::Scratch bitmaskScratch;       // only touched when --algo bitmask
     Edges::Scratch edgesScratch;           // only touched when --edge/--edge-alpha is on
+
+    // What this frame's own processing is up to right now -- see FrameProgress.hpp.
+    // A plain member, not a pointer: every frame (still or, later, video) owns its
+    // own progress state for its own lifetime, the same as every other member here.
+    FrameProgress progress;
 
     // Sizes every buffer here that CAN be known up front (buffer, plane, ditheredPlane),
     // so a call to FrameProcessor::run afterward allocates nothing new in the steady-state

@@ -2,6 +2,7 @@
 #include "core/Profiler.hpp"
 #include "Assets.hpp"
 #include "FrameProcessor.hpp"
+#include "ProgressDisplay.hpp"
 #include "bitmap/Resample.hpp"
 #include "core/Charset.hpp"
 #include "core/FrameStorage.hpp"
@@ -170,11 +171,22 @@ int run(const Options& opts)
     // only decides what to do with `text`/`renderedImage` afterward, same as it always
     // decided what to do with the locals those used to be.
     FrameStorage frame;
+
+    // One Line today -- a still image is the whole picture. Video will construct
+    // this the same way, just with one Line per worker plus an aggregate; nothing
+    // about Renderer/Watcher itself changes shape when that lands. Starts polling
+    // immediately, stops (and does its own final draw + erase) via RAII on every
+    // return path below, including the early ones.
+    ProgressDisplay::Watcher watcher({{"frame", &frame.progress}});
+
+    frame.progress.set("loading", 0.f);
     {
         ASCIIGEN_PROFILE("load", "io");
         frame.input = ImageManager::loadImage(opts.input.path);
     }
     if (!frame.input.pixels) return 3;
+
+    frame.progress.set("setup", 0.02f);
 
     int cols = 0, rows = 0;
     resolveGridSize(opts, frame.input, cols, rows);
@@ -321,6 +333,11 @@ int run(const Options& opts)
     }
 
     FrameProcessor::run(frame, opts, ctx);
+
+    // Stopped explicitly, not left to the destructor, so its background thread is
+    // fully joined before anything below writes to the same stdout -- otherwise
+    // the watcher's next redraw could land mid-write of the ASCII art itself.
+    watcher.stop();
 
     if (opts.output.stdoutEnabled) {
         Terminal::enableAnsi();

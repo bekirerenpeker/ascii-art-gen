@@ -103,6 +103,13 @@ void run(FrameStorage& frame, const Options& opts, const Context& ctx)
 {
     ASCIIGEN_PROFILE("FrameProcessor::run", "pipeline");
 
+    // Call-granularity, not per-pixel or per-cell, same reasoning as ASCIIGEN_PROFILE's
+    // own scopes: these are relaxed atomic stores, cheap enough to not matter at this
+    // frequency, but a per-cell store inside Structure/Bitmask's own loops would start
+    // costing something real for no visible benefit -- the bar only redraws a few
+    // times a second regardless (see ProgressDisplay::Watcher), so sub-stage precision
+    // here would never even be seen.
+    frame.progress.set("alpha", 0.05f);
     extractAlphaSource(frame.input, frame.alphaSource, opts.edge.alphaOutline);
 
     // Whichever side has fewer pixels goes first. A source bigger than the plane (the
@@ -110,6 +117,7 @@ void run(FrameStorage& frame, const Options& opts, const Context& ctx)
     // away regardless. A source smaller than the plane gets filtered first instead:
     // resampling it up before filtering would mean filtering mostly-interpolated pixels
     // the resample just invented. See optimizations.md's "plane is upsampled" entry.
+    frame.progress.set("resample", 0.15f);
     {
         ASCIIGEN_PROFILE("resample + source filters", "resample");
 
@@ -131,6 +139,7 @@ void run(FrameStorage& frame, const Options& opts, const Context& ctx)
     // against the same plane the algorithm scored shapes against, not what
     // dithering nudged it to -- matches what every algorithm already did on its own
     // internal copy before this moved out to here.
+    frame.progress.set("dither", 0.30f);
     {
         ASCIIGEN_PROFILE("dither", "dither");
         const size_t planeBytes =
@@ -145,6 +154,7 @@ void run(FrameStorage& frame, const Options& opts, const Context& ctx)
         Dithering::apply(frame.ditheredPlane, blockW, blockH);
     }
 
+    frame.progress.set("select", 0.40f);
     switch (opts.algo.name) {
     case AlgoName::Ramp:
         Ramp::generate(frame.ditheredPlane, frame.buffer, *ctx.charset, opts.algo.rampChars);
@@ -184,11 +194,13 @@ void run(FrameStorage& frame, const Options& opts, const Context& ctx)
 
     // May append the directional glyphs, so anything rasterised from the charset has to
     // come after this.
+    frame.progress.set("edges", 0.75f);
     {
         ASCIIGEN_PROFILE("edges", "edges");
         Edges::apply(frame.plane, frame.buffer, *ctx.charset, frame.alphaSource, frame.edgesScratch);
     }
 
+    frame.progress.set("grade", 0.85f);
     {
         ASCIIGEN_PROFILE("cell filters", "filter");
 
@@ -216,6 +228,7 @@ void run(FrameStorage& frame, const Options& opts, const Context& ctx)
         && !opts.algo.allowBackground)
         frame.buffer.fillBackground(backdrop);
 
+    frame.progress.set("render", 0.90f);
     frame.text = AnsiRenderer::render(
         frame.buffer, *ctx.charset,
         {.depth = toDepth(opts.output.color),
@@ -236,6 +249,11 @@ void run(FrameStorage& frame, const Options& opts, const Context& ctx)
             frame.renderedImage
         );
     }
+
+    // Not "done" -- whatever's driving this (Pipeline.cpp today) still has to save
+    // the result, which is real, sometimes-slow work of its own and gets its own
+    // stage name rather than being folded into "finished processing."
+    frame.progress.set("processed", 0.95f);
 }
 
 }   // namespace FrameProcessor
