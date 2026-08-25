@@ -504,14 +504,25 @@ Result parse(int argc, char* argv[], Options& out)
                 r.fail("bad --algo-structure-mass-blocks \"" + v + "\" (want WxH)");
             continue;
         }
+        if (n == "algo-structure-gradient-stride") {
+            out.algo.structureGradientStride = r.intValue(n);
+            continue;
+        }
+        if (n == "algo-structure-fast-atan") { out.algo.structureFastAtan = true; continue; }
+        if (n == "no-algo-structure-fast-atan") { out.algo.structureFastAtan = false; continue; }
+        if (n == "algo-structure-flat-threshold") {
+            out.algo.structureFlatThreshold = r.floatValue(n);
+            continue;
+        }
 
         // --- backdrop ---
         if (n == "backdrop") {
             const std::string v = r.value(n);
             if (v == "none") out.backdrop.mode = BackdropMode::None;
             else if (v == "auto") out.backdrop.mode = BackdropMode::Auto;
+            else if (v == "transparent") out.backdrop.mode = BackdropMode::Transparent;
             else if (parseColor(v, out.backdrop.color)) out.backdrop.mode = BackdropMode::Fixed;
-            else r.fail("bad --backdrop \"" + v + "\" (none, auto, or #RRGGBB)");
+            else r.fail("bad --backdrop \"" + v + "\" (none, auto, transparent, or #RRGGBB)");
             continue;
         }
         if (n == "backdrop-darken") { out.backdrop.darken = r.floatValue(n); continue; }

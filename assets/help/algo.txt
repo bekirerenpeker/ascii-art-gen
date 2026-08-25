@@ -80,3 +80,36 @@ SHARED BY EVERY ALGORITHM
       each, which is exactly what / | \ and - can express -- so finer
       binning describes angles no glyph can actually draw.
       4  default     8  finer, and slower for little gain
+
+  --algo-structure-gradient-stride N                               (1)
+      Speed/quality trade, off at the default. Above 1, the per-pixel
+      gradient (the orientation term's input) is only computed on a
+      stride-N grid inside each cell; ink placement (the mass term) still
+      reads every pixel regardless. Measured ~10% off Structure::generate
+      at stride 2, and changed the chosen glyph on ~9.6% of cells on a real
+      photo -- noticeable if you go looking, not always noticeable at a
+      glance. Try it, don't just leave it on.
+      1  every pixel, default     2  quarter the gradient samples
+
+  --algo-structure-fast-atan                                        (on)
+      Speed/quality trade, on by default -- the one exception on this page
+      to "off unless proven worth it". Replaces the exact angle calculation
+      in the gradient with a polynomial approximation good to a fraction of
+      a degree -- far smaller than a single bin's 45-degree width. Measured
+      ~40% off buildDescriptor's share of Structure::generate, and changed
+      the chosen glyph on ~0.14% of cells on a real photo: the biggest cost
+      cut of any single change on this page, for a difference small enough
+      to judge worth taking by default.
+      --no-algo-structure-fast-atan   the exact std::atan2 + std::fmod path
+
+  --algo-structure-flat-threshold F                              (0.02)
+      Below this, a tile's orientation and mass terms are both judged too
+      small to discriminate between glyphs, and picking one drops to a
+      binary search by ink coverage instead of scoring all of them, tie-
+      broken by which candidate's own ink sits closest to centred -- a plain
+      "." reads better than a stray-looking mark on an otherwise flat patch.
+      Measured on a real photo: ~47% of cells qualify, and ~0.8% of all
+      cells picked a different (more centred) glyph because of it.
+      0     only an exactly-uniform tile -- vanishingly rare on a real photo
+      0.02  default
+      a negative value disables this path entirely

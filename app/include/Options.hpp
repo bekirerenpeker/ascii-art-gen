@@ -53,6 +53,12 @@ enum class BackdropMode
     None,
     Auto,
     Fixed,
+
+    // Terminal/text sinks only: no background escape is emitted at all, so
+    // whatever the terminal's own background is shows through, the same as
+    // ordinary unstyled text. Image output has no such notion to fall back
+    // to and renders exactly as None would.
+    Transparent,
 };
 
 enum class ColorMode
@@ -230,13 +236,32 @@ struct AlgoOptions
     int structureMassBlocksY = 16;
     int structureBins = 4;
 
+    // el-3: quality/speed trade, off by default -- see --help algo. Changes
+    // nothing at 1.
+    int structureGradientStride = 1;
+
+    // el-4: on by default -- measured a ~43% cut on buildDescriptor's share
+    // of Structure::generate for a 0.14% cell-level glyph change on a real
+    // photo (see optimizations.md item 7), judged worth it. Turn off with
+    // --no-algo-structure-fast-atan for the exact std::atan2 + std::fmod path.
+    bool structureFastAtan = true;
+
+    // Flat-tile shortcut threshold in pickGlyph -- see Structure.hpp's
+    // flatThreshold. 0 would only ever fire on an exactly-uniform tile, which
+    // real photos essentially never produce, so this defaults a little above
+    // that.
+    float structureFlatThreshold = 0.02f;
+
     // Only Ramp reads this: it wants an ordered string, not a glyph set.
     std::string rampChars = " .:-=+*#%@";
 };
 
 struct BackdropOptions
 {
-    BackdropMode mode = BackdropMode::None;
+    // Bare invocation, no preset: your terminal's own background shows through
+    // rather than a painted black rectangle. Every preset that cares sets its
+    // own mode explicitly, so this default is only ever seen unstyled.
+    BackdropMode mode = BackdropMode::Transparent;
     RGB color {0, 0, 0};
     float darken = 0.15f;
     float lumaThreshold = 40.f;

@@ -16,10 +16,6 @@ void unsharpMask(Image& image, float amount, int radius)
 
 
     const size_t n = (size_t)image.width * (size_t)image.height;
-    std::vector<float> ch[3] = {std::vector<float>(n), std::vector<float>(n),
-                                std::vector<float>(n)};
-    std::vector<float> soft[3] = {std::vector<float>(n), std::vector<float>(n),
-                                  std::vector<float>(n)};
 
     // Walked as a flat pointer rather than through getAt/setAt. A byte write may
     // alias anything, so the accessors force width/height/depth to be reloaded
@@ -28,41 +24,36 @@ void unsharpMask(Image& image, float amount, int radius)
     const int d = image.depth;
     byte* const px = image.pixels;
 
-    if (d >= 3) {
-        const byte* p = px;
-        for (size_t i = 0; i < n; i++, p += d) {
-            ch[0][i] = p[0], ch[1][i] = p[1], ch[2][i] = p[2];
-        }
-    }
-    else {
-        const byte* p = px;
-        for (size_t i = 0; i < n; i++, p += d) ch[0][i] = ch[1][i] = ch[2][i] = p[0];
-    }
-
-    for (int c = 0; c < 3; c++)
-        blur(ch[c].data(), soft[c].data(), image.width, image.height, radius);
+    // S4: two buffers reused across channels instead of six held at once.
+    // Channels are independent -- each only ever reads or writes its own byte
+    // lane -- so nothing was ever gained from gathering all of them up front.
+    std::vector<float> ch(n), soft(n);
 
     // The blurred copy holds everything the blur did NOT remove, so the
     // difference is exactly the detail it destroyed. Adding that back on top is
     // what sharpens; the original is untouched where there was no detail to lose.
     if (d >= 3) {
-        byte* p = px;
-        for (size_t i = 0; i < n; i++, p += d) {
-            p[0] = toByte(ch[0][i] + amount * (ch[0][i] - soft[0][i]));
-            p[1] = toByte(ch[1][i] + amount * (ch[1][i] - soft[1][i]));
-            p[2] = toByte(ch[2][i] + amount * (ch[2][i] - soft[2][i]));
+        for (int c = 0; c < 3; c++) {
+            const byte* p = px + c;
+            for (size_t i = 0; i < n; i++, p += d) ch[i] = *p;
+
+            blur(ch.data(), soft.data(), image.width, image.height, radius);
+
+            byte* dst = px + c;
+            for (size_t i = 0; i < n; i++, dst += d) *dst = toByte(ch[i] + amount * (ch[i] - soft[i]));
         }
     }
     else {
-        // Grey buffers keep setAt's collapse, so a 1 or 2 channel image sharpens
-        // the same way it did before.
-        byte* p = px;
-        for (size_t i = 0; i < n; i++, p += d) {
-            const int r = toByte(ch[0][i] + amount * (ch[0][i] - soft[0][i]));
-            const int g = toByte(ch[1][i] + amount * (ch[1][i] - soft[1][i]));
-            const int b = toByte(ch[2][i] + amount * (ch[2][i] - soft[2][i]));
-            p[0] = byte((r * 299 + g * 587 + b * 114) / 1000);
-        }
+        // A grey pixel's r, g and b were always identical, so the old
+        // luma-reweight after sharpening each one separately just recombined
+        // three equal values back into itself -- one pass lands on the same byte.
+        const byte* p = px;
+        for (size_t i = 0; i < n; i++, p += d) ch[i] = p[0];
+
+        blur(ch.data(), soft.data(), image.width, image.height, radius);
+
+        byte* dst = px;
+        for (size_t i = 0; i < n; i++, dst += d) dst[0] = toByte(ch[i] + amount * (ch[i] - soft[i]));
     }
 }
 

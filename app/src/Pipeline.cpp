@@ -376,7 +376,10 @@ int run(const Options& opts)
              .massWeight = opts.algo.structureMassWeight,
              .toneWeight = opts.algo.structureToneWeight,
              .allowBackground = opts.algo.allowBackground,
-             .brightnessGamma = opts.algo.brightnessGamma}
+             .brightnessGamma = opts.algo.brightnessGamma,
+             .gradientStride = opts.algo.structureGradientStride,
+             .fastAtan = opts.algo.structureFastAtan,
+             .flatThreshold = opts.algo.structureFlatThreshold}
         );
         break;
     }
@@ -416,11 +419,19 @@ int run(const Options& opts)
     // showing through wherever a glyph does not cover -- which reads as a dark
     // seam between every pair of blocks. The backdrop is still what pads the
     // picture; it just has no business inside the grid here.
-    if (opts.backdrop.mode != BackdropMode::None && !opts.algo.allowBackground)
+    //
+    // Transparent needs no fill at all -- the ANSI renderer is about to skip
+    // the background escape entirely, so whatever colour sat in the buffer
+    // would never be seen anyway.
+    if (opts.backdrop.mode != BackdropMode::None && opts.backdrop.mode != BackdropMode::Transparent
+        && !opts.algo.allowBackground)
         buffer.fillBackground(backdrop);
 
-    const std::string text =
-        AnsiRenderer::render(buffer, charset, {.depth = toDepth(opts.output.color)});
+    const std::string text = AnsiRenderer::render(
+        buffer, charset,
+        {.depth = toDepth(opts.output.color),
+         .transparentBackground = opts.backdrop.mode == BackdropMode::Transparent}
+    );
 
     if (opts.output.stdoutEnabled) {
         Terminal::enableAnsi();

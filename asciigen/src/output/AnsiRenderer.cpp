@@ -59,17 +59,21 @@ std::string render(const CellBuffer& buffer, const Charset& charset, AnsiRenderO
                 appendU8(out, cell.fg.r), out += ';';
                 appendU8(out, cell.fg.g), out += ';';
                 appendU8(out, cell.fg.b);
-                out += ";48;2;";
-                appendU8(out, cell.bg.r), out += ';';
-                appendU8(out, cell.bg.g), out += ';';
-                appendU8(out, cell.bg.b);
+                if (!opts.transparentBackground) {
+                    out += ";48;2;";
+                    appendU8(out, cell.bg.r), out += ';';
+                    appendU8(out, cell.bg.g), out += ';';
+                    appendU8(out, cell.bg.b);
+                }
                 out += 'm';
                 break;
             case ColorDepth::Ansi16:
                 out += ESC "[";
                 appendU8(out, (int)cell.fg.toGlyphColor());
-                out += ';';
-                appendU8(out, (int)cell.bg.toGlyphColor() + 10);
+                if (!opts.transparentBackground) {
+                    out += ';';
+                    appendU8(out, (int)cell.bg.toGlyphColor() + 10);
+                }
                 out += 'm';
                 break;
             case ColorDepth::None: break;
