@@ -216,6 +216,36 @@ bool parseAspect(const std::string& text, float& out)
 
 bool boolValue(const std::string& v) { return v != "off" && v != "false" && v != "0"; }
 
+// Plain seconds ("12.5"), "mm:ss(.ms)" ("4:52"), or "hh:mm:ss(.ms)"
+// ("1:04:52.3") -- the same shapes ffmpeg's own -ss/-to accept, so a duration
+// copied from there works here unchanged.
+bool parseTime(const std::string& text, double& outSeconds)
+{
+    std::vector<std::string> parts;
+    std::stringstream ss(text);
+    std::string part;
+    while (std::getline(ss, part, ':')) parts.push_back(part);
+    if (parts.empty() || parts.size() > 3) return false;
+
+    try {
+        double h = 0, m = 0, s = 0;
+        if (parts.size() == 1) s = std::stod(parts[0]);
+        else if (parts.size() == 2) {
+            m = std::stod(parts[0]);
+            s = std::stod(parts[1]);
+        } else {
+            h = std::stod(parts[0]);
+            m = std::stod(parts[1]);
+            s = std::stod(parts[2]);
+        }
+        outSeconds = h * 3600.0 + m * 60.0 + s;
+    } catch (...) {
+        return false;
+    }
+
+    return outSeconds >= 0.0;
+}
+
 }   // namespace
 
 Result parse(int argc, char* argv[], Options& out)
@@ -263,7 +293,7 @@ Result parse(int argc, char* argv[], Options& out)
             // that is a styling decision, not a detail level. Changing it here
             // would mean a preview showed different art from the final render,
             // which defeats the point of previewing.
-            if (v == "test") {
+            if (v == "low") {
                 out.font.renderSize = 16;
                 out.output.pngCompression = 1;
             } else if (v == "mid") {
@@ -274,7 +304,7 @@ Result parse(int argc, char* argv[], Options& out)
                 out.output.pngCompression = 9;
             } else {
                 std::cerr << "asciigen: unknown --render-detail \"" << v
-                          << "\" (test, mid, high)\n";
+                          << "\" (low, mid, high)\n";
                 return Result::ExitFailure;
             }
         }
@@ -331,6 +361,23 @@ Result parse(int argc, char* argv[], Options& out)
             }
             continue;
         }
+
+        // --- video ---
+        if (n == "fps") { out.video.fps = r.floatValue(n); continue; }
+        if (n == "start-time") {
+            const std::string v = r.value(n);
+            if (!parseTime(v, out.video.startTime))
+                r.fail("bad --start-time \"" + v + "\" (want seconds, mm:ss, or hh:mm:ss)");
+            continue;
+        }
+        if (n == "end-time") {
+            const std::string v = r.value(n);
+            if (!parseTime(v, out.video.endTime))
+                r.fail("bad --end-time \"" + v + "\" (want seconds, mm:ss, or hh:mm:ss)");
+            continue;
+        }
+        if (n == "start-frame") { out.video.startFrame = r.intValue(n); continue; }
+        if (n == "end-frame") { out.video.endFrame = r.intValue(n); continue; }
 
         // --- source ---
         if (n == "source-auto-levels") {
@@ -551,6 +598,7 @@ Result parse(int argc, char* argv[], Options& out)
 
         // --- output ---
         if (n == "out") { out.output.paths.push_back(r.value(n)); continue; }
+        if (n == "format") { out.output.format = r.value(n); continue; }
         if (n == "stdout") {
             out.output.stdoutEnabled = true;
             out.output.stdoutExplicit = true;
@@ -581,10 +629,10 @@ Result parse(int argc, char* argv[], Options& out)
         if (n == "png-compression") { out.output.pngCompression = r.intValue(n); continue; }
         if (n == "render-detail") {
             const std::string v = r.value(n);
-            if (v == "test") out.renderDetail = RenderDetail::Test;
+            if (v == "low") out.renderDetail = RenderDetail::Low;
             else if (v == "mid") out.renderDetail = RenderDetail::Mid;
             else if (v == "high") out.renderDetail = RenderDetail::High;
-            else r.fail("unknown --render-detail \"" + v + "\" (test, mid, high)");
+            else r.fail("unknown --render-detail \"" + v + "\" (low, mid, high)");
             continue;
         }
         if (n == "image-margin") { out.output.imageMargin = r.intValue(n); continue; }

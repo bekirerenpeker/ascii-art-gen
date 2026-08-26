@@ -93,7 +93,7 @@ enum class ImageFit
 enum class RenderDetail
 {
     None,
-    Test,
+    Low,
     Mid,
     High,
 };
@@ -289,6 +289,23 @@ struct BackdropOptions
     float lumaThreshold = 40.f;
 };
 
+struct VideoOptions
+{
+    // 0 keeps the source's own frame rate. Only ever drops frames to reach a
+    // lower target -- a value at or above the source rate is left alone
+    // rather than duplicating frames to fake a higher one.
+    double fps = 0.0;
+
+    // -1 means unset. Whichever of the time- or frame-based form for a given
+    // edge is given wins; there's no dedicated error for setting both on the
+    // same edge, same as any other pair of flags that can express the same
+    // thing -- last one parsed simply wins.
+    double startTime = -1.0;
+    double endTime = -1.0;
+    int startFrame = -1;
+    int endFrame = -1;
+};
+
 struct OutputOptions
 {
     std::vector<std::string> paths;
@@ -296,6 +313,13 @@ struct OutputOptions
     // Terminal unless files were asked for. Writing a file is always explicit.
     bool stdoutEnabled = true;
     bool stdoutExplicit = false;
+
+    // --format: which extension a bare-directory --out should use, so a
+    // filename never has to be spelled out just to pick a format. Empty means
+    // "use whatever this output kind's own default extension is" -- resolved
+    // in Pipeline.cpp's resolveOutputPath, which is also where a leading dot
+    // (or its absence) and case get normalised; stored here exactly as typed.
+    std::string format;
 
     ColorMode color = ColorMode::TrueColor;
     bool overwrite = false;
@@ -332,6 +356,7 @@ struct Options
     AlgoOptions algo;
     BackdropOptions backdrop;
     OutputOptions output;
+    VideoOptions video;
 
     std::vector<std::string> presets;
     RenderDetail renderDetail = RenderDetail::None;

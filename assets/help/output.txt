@@ -14,6 +14,15 @@ for, and once you ask for one, printing stops unless you also pass --stdout.
         asciigen assets/images/apple.png --out ./output
             -> ./output/apple.png
 
+  --format EXT                                    (none; extension decides)
+      Which format a bare-directory --out should use, so a filename never has
+      to be spelled out just to pick one. Dot optional and case-insensitive
+      ("png", ".png" and "PNG" all work); jpg and jpeg both accepted. Ignored
+      whenever --out already names a real file -- that extension wins.
+
+        asciigen photo.jpg --out ./output --format txt
+            -> ./output/photo.txt
+
   --stdout / --no-stdout
       Force printing on or off, whatever else was asked for.
 
@@ -36,6 +45,12 @@ FORMATS
   .png .jpg     the glyphs drawn back into a picture. Honours --image-*
   .ans          text with colour escape codes. Displays in a terminal
   .txt          characters only, no colour
+
+  A VIDEO input can also target .ans/.txt instead of a pixel container
+  (.mp4 .mkv .mov .avi .webm .m4v) -- every frame one after another, in the
+  same .ans/.txt shape as a still image's, with one metadata line (fps, frame
+  count, duration) up front and a marker between frames. Not meant to be
+  cat'd -- see --help input for what happens when one is given back in.
 
 
 PICTURE SIZE

@@ -11,12 +11,19 @@
 // What stage of its own lifecycle one pool slot is in. A still image walks this
 // exact sequence once, on its one slot; video cycles many frames through a
 // handful of slots the same way -- one lifecycle per FRAME, not per slot.
+//
+// Done is momentary, not a resting state anything waits on: whoever finishes a
+// slot's processing extracts whatever it needs (the rendered frame; the
+// frame's own index) and moves it to Free again immediately afterward, in the
+// same breath -- see FrameWorkerPool::Manager. It exists purely so a live
+// per-slot status display has something to show between Processing and Free,
+// not because any consumer blocks waiting for it.
 enum class FrameSlotState
 {
     Free,         // available for a new frame's input to be loaded into
     Ready,        // input loaded, queued for a worker to pick up
     Processing,   // claimed by a worker; FrameProcessor::run is running
-    Done          // finished; result is ready for the consumer to read/save
+    Done          // momentary: processing just finished, about to go Free
 };
 
 struct FrameSlot
@@ -26,21 +33,28 @@ struct FrameSlot
     int frameIndex = -1;   // which frame (by sequence) this currently holds -- video's ordering, unused for a still
 };
 
-// A fixed-size array of frame slots plus the queues that move work between
-// whatever produces frames, whatever processes them, and whatever consumes the
-// results -- one object holding everything those three roles need pointed at
-// them, so each only ever touches the ONE slot index it was handed, never this
+// A fixed-size array of frame slots plus the queue that hands work to whatever
+// workers exist -- one object holding everything a worker needs pointed at it,
+// so a worker only ever touches the ONE slot index it was handed, never this
 // pool's other bookkeeping directly.
 //
-// Three producer/consumer relationships share the same mutex and condition
+// Two producer/consumer relationships share the same mutex and condition
 // variable rather than getting one each: a loader waits for a Free slot and a
 // worker's markFree() wakes it; a worker waits for a Ready slot and a loader's
-// submit() wakes it; a saver waits for a Done slot and a worker's markDone()
-// wakes it. Every state-changing call notifies ALL waiters, not just the one
-// kind that logically cares, which costs a handful of pointless wakeups per
-// frame in exchange for being unable to miss one by picking the wrong
-// condition_variable to notify -- a bad trade at real contention, a good one
-// at "once per frame."
+// submit() wakes it. Every state-changing call notifies ALL waiters, not just
+// the one kind that logically cares, which costs a couple of pointless
+// wakeups per frame in exchange for being unable to miss one by picking the
+// wrong condition_variable to notify -- a bad trade at real contention, a
+// good one at "once per frame."
+//
+// Notably absent: anything a SAVER waits on. That used to live here (a Done
+// queue a save step blocked on), but it meant a slot -- input, plane, every
+// scratch buffer, all of it -- stayed occupied until that consumer got around
+// to it. Now the worker itself extracts the rendered result and frees the
+// slot in the same breath processing finishes; what happens to the render
+// result afterward (see FrameWorkerPool::Manager's onRendered callback, and
+// SaveQueue for video specifically) is a separate, much lighter-weight
+// handoff that doesn't hold this pool's slots hostage.
 //
 // Allocated once, up front, with a single call: `slotCount` is worker count
 // plus slack for video, exactly 1 for a still image -- same class, same call
@@ -66,14 +80,14 @@ class FramePool
     int waitForFreeSlot();
 
     // Called once a slot's storage.input has been filled and is ready for a
-    // worker. `frameIndex` is the frame's sequence number, used by the saver to
+    // worker. `frameIndex` is the frame's sequence number, used downstream to
     // write frames back out in order regardless of which finishes processing
     // first; pass -1 (the default) for the still-image case, which has no
     // ordering to preserve.
     void submit(int slotIndex, int frameIndex = -1);
 
     // No more submit() calls coming. Wakes every thread blocked in nextReady()
-    // or waitForDone() so they can notice there is nothing left to ever arrive.
+    // so idle workers can notice there is nothing left to ever arrive.
     void closeQueue();
 
     // --- Worker side ---
@@ -83,35 +97,22 @@ class FramePool
     // returned slot Processing before returning it.
     bool nextReady(int& outSlotIndex);
 
-    // Called once FrameProcessor::run returns. Moves the slot to Done and wakes
-    // whatever is waiting in waitForDone().
+    // Sets a slot to Done -- purely observational, see FrameSlotState's own
+    // note -- then to markFree(): call both, back to back, once
+    // FrameProcessor::run returns and whatever's needed from the slot has
+    // been extracted.
     void markDone(int slotIndex);
 
-    // --- Saver side (main thread for a still image; a dedicated thread for video) ---
-
-    // Blocks until some slot is Done, or every slot that could ever reach Done
-    // already has and nothing more is coming (queue closed, nothing Ready or
-    // Processing) -- the latter returns -1, a saver's signal to stop.
-    int waitForDone();
-
-    // Called once the saver has copied whatever it needs out of a Done slot.
-    // Moves it back to Free and wakes whatever is waiting in waitForFreeSlot().
+    // Moves a slot back to Free and wakes whatever is waiting in
+    // waitForFreeSlot(). Called immediately after markDone() by whoever just
+    // finished processing -- there is no separate consumer this waits on.
     void markFree(int slotIndex);
 
-    // --- Whole-batch case (a still image; a fixed one-shot batch of frames) ---
-
-    // True once every slot has reached Done. Not used by the video path, which
-    // recycles slots through markFree() instead of leaving them Done forever.
-    bool allDone() const;
-
   private:
-    bool anyProcessingLocked() const;
-
     std::vector<std::unique_ptr<FrameSlot>> m_slots;
 
     std::mutex m_mutex;
     std::condition_variable m_cv;
     std::queue<int> m_readyQueue;
-    std::queue<int> m_doneQueue;
     bool m_closed = false;
 };

@@ -16,8 +16,30 @@ asciigen -- input
   underlying FFmpeg build can decode -- verified so far against H.264-in-MP4).
   Detected by content, not extension: opened and probed for a real multi-frame
   video stream, so a single still image never gets misread as one. A video
-  input needs a video --out (mp4, mkv, mov, avi, webm, m4v) -- see --preview
-  below for the one exception.
+  input needs a video --out -- a pixel container (mp4, mkv, mov, avi, webm,
+  m4v) or a text/ANSI one (.txt, .ans; see --help output) -- --preview below
+  is the one exception.
+
+
+TRIMMING AND FRAME RATE
+
+  --start-time T / --end-time T        seconds, "mm:ss", or "hh:mm:ss[.ms]"
+  --start-frame N / --end-frame N      frame numbers instead, if that's easier
+  --fps N                                              (off; keeps source fps)
+
+  Video only. The frame- and time-based forms say the same thing in different
+  units -- whichever is given for a given edge (start/end) is used; giving
+  both for the same edge just means the one parsed last wins, same as any
+  other pair of flags that overlap. --fps only ever drops frames to reach a
+  lower rate than the source has -- it does not invent frames to reach a
+  higher one.
+
+  There is no seeking (see --preview below), so trimming still costs decoding
+  every frame up to --start-time/--start-frame -- just not processing or
+  writing them.
+
+    asciigen clip.mp4 --start-time 4:52 --end-time 5:10 --out clip.mp4
+    asciigen clip.mp4 --fps 12 --out small.mp4
 
 
 PREVIEW ONE FRAME
@@ -51,5 +73,11 @@ TEXT PASSTHROUGH
   This exists because `cat` and `type` do not switch the console into VT mode,
   so an .ans file printed with them comes out as literal escape sequences
   instead of colour.
+
+  A .txt/.ans that's actually a saved VIDEO (see --help output) is detected
+  the same way and played back instead -- one frame at a time, redrawn in
+  place, paced to the fps it was saved with -- rather than dumped as one wall
+  of text. Not a full player: no pause, no seeking, no looping, just start to
+  end.
 
   Every other flag is ignored in this mode.

@@ -19,7 +19,7 @@ COMMON
   --image-width N          output picture width in pixels
   --backdrop MODE          none | auto | #RRGGBB                   (none)
   --font-bold [F]          synthesise bold from a regular face         (0)
-  --render-detail LEVEL    test | mid | high -- glyph size + encoding    ()
+  --render-detail LEVEL    low | mid | high -- glyph size + encoding    ()
   --profile PATH           write a Chrome-trace JSON of the run
 
 HELP TOPICS

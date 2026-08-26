@@ -50,37 +50,7 @@ bool FramePool::nextReady(int& outSlotIndex)
 
 void FramePool::markDone(int slotIndex)
 {
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_slots[slotIndex]->state.store(FrameSlotState::Done, std::memory_order_release);
-        m_doneQueue.push(slotIndex);
-    }
-    m_cv.notify_all();
-}
-
-bool FramePool::anyProcessingLocked() const
-{
-    for (const auto& s : m_slots)
-        if (s->state.load(std::memory_order_acquire) == FrameSlotState::Processing) return true;
-    return false;
-}
-
-int FramePool::waitForDone()
-{
-    std::unique_lock<std::mutex> lock(m_mutex);
-    m_cv.wait(lock, [&] {
-        if (!m_doneQueue.empty()) return true;
-        // Nothing waiting right now -- only really done if nothing more can
-        // ever arrive: closed to new submissions, nothing left to hand a
-        // worker, and no worker still holding a slot that will become Done.
-        return m_closed && m_readyQueue.empty() && !anyProcessingLocked();
-    });
-
-    if (m_doneQueue.empty()) return -1;   // fully drained, nothing left ever
-
-    const int idx = m_doneQueue.front();
-    m_doneQueue.pop();
-    return idx;
+    m_slots[slotIndex]->state.store(FrameSlotState::Done, std::memory_order_release);
 }
 
 void FramePool::markFree(int slotIndex)
@@ -99,11 +69,4 @@ void FramePool::closeQueue()
         m_closed = true;
     }
     m_cv.notify_all();
-}
-
-bool FramePool::allDone() const
-{
-    for (const auto& s : m_slots)
-        if (s->state.load(std::memory_order_acquire) != FrameSlotState::Done) return false;
-    return true;
 }

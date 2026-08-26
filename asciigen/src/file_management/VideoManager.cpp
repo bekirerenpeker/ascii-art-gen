@@ -86,6 +86,12 @@ bool openVideoStream(const std::filesystem::path& filepath, RawHandles& h, bool 
     if (avcodec_parameters_to_context(h.codec, h.fmt->streams[h.streamIndex]->codecpar) < 0)
         return false;
 
+    // Tried and reverted: setting thread_count = 0 here to let libavcodec
+    // decode each call across multiple internal threads. Measured slower, not
+    // faster, on this machine -- the worker pool below already sizes itself to
+    // hardware_concurrency(), so every core is already spoken for by the time
+    // a frame reaches this decoder; giving it its own thread pool on top just
+    // buys CPU oversubscription. Left at the default (1) deliberately.
     if (avcodec_open2(h.codec, decoder, nullptr) < 0) return false;
 
     h.frame = av_frame_alloc();
@@ -308,10 +314,41 @@ VideoWriter::VideoWriter(const std::filesystem::path& filepath, int width, int h
     h.codec->pix_fmt = AV_PIX_FMT_YUV420P;
     h.codec->time_base = timeBase;
     h.codec->framerate = av_inv_q(timeBase);
-    h.codec->gop_size = 12;
+    // Was 12 (a typical natural-video GOP). Dropped after a real quality bug:
+    // P-frames drifted visibly worse the further they sat from the last
+    // I-frame, and for THIS content that's structural, not a tuning problem --
+    // each glyph cell one macroblock roughly aligns with is independently
+    // near-random frame to frame (dithering isn't temporally coherent, and
+    // glyph selection can flip between two similarly-scored but visually
+    // different shapes for the same cell), which is close to a worst case for
+    // motion-compensated prediction. Confirmed directly: re-encoding the same
+    // clip with gop_size 12 produced visible horizontal banding by the last
+    // P-frame of a GOP that a same-position I-frame didn't have; gop_size 1
+    // (all-intra) removed it completely but roughly tripled file size; 2 --
+    // at most one P-frame of drift between resets -- looked identical to
+    // all-intra on the same frames while costing about half as much size
+    // increase (~2.2x here vs ~3.4x). Not re-tuned per clip; a future
+    // improvement, not this fix's job.
+    h.codec->gop_size = 2;
 
-    // A round-number-ish default rather than a computed one -- good enough to
-    // not look blocky at typical ascii-render resolutions; not tuned.
+    // Tried and reverted: an rc_max_rate/rc_buffer_size ceiling here, meant to
+    // fix a specific file (2560x4544 @ 60fps) a strict player rejected as
+    // "unsupported format" -- its real bitrate was 118 Mbps against a
+    // MPEG-4 Simple Profile tag that doesn't legally go anywhere near that.
+    // Measured effect: it knocked a normal file's overshoot down from 1.65x to
+    // about 1.3x (24.3 -> 18.6 Mbps for a 1080p source), visibly softer for no
+    // reason since that file already played fine -- while the actual target,
+    // whose content needs more bits per macroblock than any legal quantizer
+    // can give up, barely moved (118 -> 112 Mbps) and still doesn't play.
+    // Confirmed directly by re-encoding one of this project's own rendered
+    // outputs through plain `ffmpeg -c:v mpeg4 -maxrate -bufsize`: it logged
+    // "rc buffer underflow ... max bitrate possibly too small" on nearly every
+    // frame and still came out oversized (our av_log_set_level above is what
+    // keeps that same warning from ever surfacing through this writer). A real
+    // capacity limit of MPEG-4 Part 2 at that resolution/frame rate, not
+    // something a bit_rate number can paper over -- fixing that file for real
+    // would mean encoding fewer pixels or fewer frames per second, not a
+    // tighter ceiling that only costs quality on every other file instead.
     h.codec->bit_rate = (int64_t)width * height * 4;
 
     if (h.fmt->oformat->flags & AVFMT_GLOBALHEADER) h.codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;

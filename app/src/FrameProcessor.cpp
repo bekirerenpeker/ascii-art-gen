@@ -99,7 +99,7 @@ void applySourceFilters(Image& img, const Options& opts)
 
 }   // namespace
 
-void run(FrameStorage& frame, const Options& opts, const Context& ctx)
+void run(FrameStorage& frame, const Options& opts, const Context& ctx, Image& renderedImage)
 {
     ASCIIGEN_PROFILE("FrameProcessor::run", "pipeline");
 
@@ -246,7 +246,7 @@ void run(FrameStorage& frame, const Options& opts, const Context& ctx)
              .scale = opts.output.imageScale,
              .aspect = opts.output.imageAspect,
              .backgroundColor = backdrop},
-            frame.renderedImage
+            renderedImage
         );
     }
 

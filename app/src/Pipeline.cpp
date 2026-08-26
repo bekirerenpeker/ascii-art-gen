@@ -4,6 +4,7 @@
 #include "FrameProcessor.hpp"
 #include "FrameWorkerPool.hpp"
 #include "ProgressDisplay.hpp"
+#include "SaveQueue.hpp"
 #include "bitmap/Resample.hpp"
 #include "core/Charset.hpp"
 #include "core/FramePool.hpp"
@@ -19,13 +20,16 @@
 #include "file_management/VideoManager.hpp"
 #include <algorithm>
 #include <atomic>
-#include <cstring>
+#include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <map>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <set>
+#include <sstream>
 #include <thread>
 
 using namespace App;
@@ -43,6 +47,78 @@ std::string lowerExtension(const std::filesystem::path& p)
     return ext;
 }
 
+// A text/ANSI video (see runVideo) is a plain .txt/.ans file with one extra
+// header line in front and this byte between every frame -- 0x1E, ASCII's own
+// "record separator", chosen specifically because it can't appear in either a
+// UTF-8 glyph or any of AnsiRenderer's escape sequences, so splitting on it
+// can never mistake real frame content for a boundary.
+constexpr const char* kTextVideoMagic = "ASCIIGEN-VIDEO";
+constexpr char kFrameSeparator = '\x1E';
+
+// Reads "key=value" pairs out of the header line written by runVideo below.
+// Unknown keys are ignored rather than rejected, so a line a future version
+// adds more fields to still parses here.
+bool parseHeaderField(const std::string& line, const std::string& key, double& out)
+{
+    const std::string needle = key + "=";
+    const size_t pos = line.find(needle);
+    if (pos == std::string::npos) return false;
+
+    try {
+        out = std::stod(line.substr(pos + needle.size()));
+    } catch (...) {
+        return false;
+    }
+
+    return true;
+}
+
+// Plays a text/ANSI video back in the terminal: print a frame, wait out its
+// share of the video's own frame rate, print the next. Repositions the
+// cursor itself by counting the previous frame's own lines and moving back up
+// that many -- rather than relying on a .ans frame's own embedded cursor-home
+// escape (see AnsiRenderer::render's screenControls) -- so a plain .txt
+// video, which can't carry any escape bytes of its own, redraws in place
+// exactly the same way a colored one does. Harmless overlap for a .ans file:
+// its own embedded home-cursor lands at the same absolute position regardless
+// of where this relative move already put the cursor. Paced off a fixed start
+// time rather than sleeping a flat 1/fps after each frame, so per-frame
+// printing overhead doesn't accumulate into drift over a long clip.
+int playTextVideo(const std::string& headerLine, const std::string& body)
+{
+    double fps = 24.0;
+    parseHeaderField(headerLine, "fps", fps);
+    if (fps <= 0.0) fps = 24.0;
+
+    const std::chrono::duration<double> frameDuration(1.0 / fps);
+    const auto start = std::chrono::steady_clock::now();
+
+    size_t pos = 0;
+    int frameIndex = 0;
+    int previousLines = 0;
+    for (;;) {
+        const size_t sep = body.find(kFrameSeparator, pos);
+        if (sep == std::string::npos) break;
+
+        // Plain stdio throughout, not std::cout -- mixing the two here would
+        // risk the cursor-move escape and the frame text landing in whichever
+        // order their separate buffers happened to flush in, the same
+        // interleaving hazard ProgressDisplay.cpp's own drawing avoids by
+        // sticking to one output mechanism throughout.
+        if (previousLines > 0) std::printf("\x1b[%dA", previousLines);
+        std::fwrite(body.data() + pos, 1, sep - pos, stdout);
+        std::fflush(stdout);
+
+        previousLines = (int)std::count(body.begin() + (std::ptrdiff_t)pos, body.begin() + (std::ptrdiff_t)sep, '\n');
+        frameIndex++;
+        pos = sep + 1;
+
+        std::this_thread::sleep_until(start + frameIndex * frameDuration);
+    }
+
+    return 0;
+}
+
 int passthrough(const Options& opts)
 {
     std::ifstream file(opts.input.path, std::ios::binary);
@@ -56,6 +132,21 @@ int passthrough(const Options& opts)
     Terminal::enableAnsi();
     Terminal::enableUtf8();
 
+    // Peeking at just the first line (then rewinding if it's not a match)
+    // keeps the common case -- an ordinary still-image .txt/.ans someone
+    // wants echoed as-is -- exactly as cheap as it was before this format
+    // existed: no reason to read a plain file fully into memory just to
+    // check whether it's the other kind.
+    std::string firstLine;
+    std::getline(file, firstLine);
+
+    if (firstLine.rfind(kTextVideoMagic, 0) == 0) {
+        std::string body((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        return playTextVideo(firstLine, body);
+    }
+
+    file.clear();
+    file.seekg(0);
     std::cout << file.rdbuf();
     return 0;
 }
@@ -145,6 +236,14 @@ void resolveGridSize(const Options& opts, int srcW, int srcH, int& cols, int& ro
 // failure (the wrong extension makes FFmpeg guess an image-sequence muxer for
 // what's actually one continuous file, which then refuses every frame after
 // the first).
+//
+// --format overrides defaultExt when given, which is its whole purpose: a way
+// to pick the output kind without spelling out a filename, going through this
+// exact same bare-directory path and therefore the exact same downstream
+// extension checks a hand-written filename would. Accepted with or without a
+// leading dot and in any case ("mp4", ".MP4", "mp4" all resolve the same) --
+// normalised here rather than at the flag, so every caller of this function
+// benefits without having to know --format exists.
 std::filesystem::path resolveOutputPath(
     const Options& opts, const std::string& given, const char* defaultExt = ".png"
 )
@@ -152,9 +251,57 @@ std::filesystem::path resolveOutputPath(
     std::error_code ec;
     if (!std::filesystem::is_directory(given, ec)) return given;
 
+    std::string ext = defaultExt;
+    if (!opts.output.format.empty()) {
+        ext = opts.output.format;
+        if (ext[0] != '.') ext = "." + ext;
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+            return (char)std::tolower(c);
+        });
+    }
+
     const std::string stem = std::filesystem::path(opts.input.path).stem().string();
-    return std::filesystem::path(given) / (stem + defaultExt);
+    return std::filesystem::path(given) / (stem + ext);
 }
+
+std::string formatBytes(uint64_t bytes)
+{
+    static const char* units[] = {"B", "KB", "MB", "GB"};
+    double v = (double)bytes;
+    int u = 0;
+    while (v >= 1024.0 && u < 3) {
+        v /= 1024.0;
+        u++;
+    }
+
+    std::ostringstream ss;
+    ss << std::fixed;
+    ss.precision(u == 0 ? 0 : (v < 10.0 ? 2 : 1));
+    ss << v << " " << units[u];
+    return ss.str();
+}
+
+std::string formatBitrate(double bitsPerSecond)
+{
+    std::ostringstream ss;
+    ss << std::fixed;
+    if (bitsPerSecond >= 1e6) {
+        ss.precision(1);
+        ss << bitsPerSecond / 1e6 << " Mbps";
+    } else {
+        ss.precision(0);
+        ss << bitsPerSecond / 1e3 << " kbps";
+    }
+    return ss.str();
+}
+
+// Empirical, not a spec constant: every sample file that actually opened in a
+// standards-strict player during testing measured under 35 Mbps; the one that
+// didn't measured over 100. There's no real MPEG-4 Part 2 profile/level that
+// legitimately covers ASCII-render resolutions in the first place (see
+// VideoWriter's own note), so this is a "loud enough to notice" line in that
+// gap, not a guarantee on either side of it.
+constexpr double kBitrateWarningThreshold = 50e6;
 
 bool wantsImage(const Options& opts)
 {
@@ -225,17 +372,21 @@ int runVideo(const Options& opts)
     // (video-roadmap.md item 11) -- an image extension here doesn't "might not
     // work", it makes FFmpeg pick a single-image muxer for what's actually one
     // continuous stream of frames, which then rejects every frame after the
-    // first. Worth failing on up front rather than mid-encode.
+    // first. Worth failing on up front rather than mid-encode. .txt/.ans are
+    // accepted too -- see runTextVideo below -- as a genuinely different kind
+    // of "video" output, not a pixel container.
     const std::string outExt = lowerExtension(outPath);
     static const std::set<std::string> kVideoExtensions {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"};
-    if (!kVideoExtensions.count(outExt)) {
+    static const std::set<std::string> kTextVideoExtensions {".txt", ".ans"};
+    const bool isTextOutput = kTextVideoExtensions.count(outExt) > 0;
+    if (!isTextOutput && !kVideoExtensions.count(outExt)) {
         std::cerr << "asciigen: \"" << outExt << "\" isn't a video container asciigen can write to -- "
-                  << "video input needs a video --out (.mp4, .mkv, .mov, .avi, .webm, .m4v)\n";
+                  << "video input needs a video --out (.mp4, .mkv, .mov, .avi, .webm, .m4v, .txt, .ans)\n";
         return 4;
     }
 
     if (!opts.output.overwrite && std::filesystem::exists(outPath)) {
-        std::cerr << "asciigen: \"" << outPath << "\" exists (use --overwrite)\n";
+        std::cerr << "asciigen: " << outPath << " exists (use --overwrite)\n";
         return 6;
     }
 
@@ -302,18 +453,22 @@ int runVideo(const Options& opts)
     else if (opts.algo.resampleFilter == ResampleFilterName::Triangle)
         resampleFilter = Resample::Filter::Triangle;
 
-    // Video output is always a rendered pixel frame -- there's no analogue yet
-    // of a still image's "maybe .txt, maybe .ans, maybe nothing" output menu.
-    // Ansi/text video output is deliberately later work, not this pass.
-    int renderH = opts.font.renderSize > 0 ? opts.font.renderSize : 32;
-    renderH = std::max(2, renderH);
-    GlyphAtlas renderAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
+    // Only built for a pixel output -- a text/ANSI one has no use for a
+    // rendered glyph atlas at all (see FrameProcessor::run's own note: a null
+    // renderAtlas skips that whole step), so skipping the construction here
+    // saves rasterising every glyph in the charset for nothing.
+    std::unique_ptr<GlyphAtlas> renderAtlas;
+    if (!isTextOutput) {
+        int renderH = opts.font.renderSize > 0 ? opts.font.renderSize : 32;
+        renderH = std::max(2, renderH);
+        renderAtlas = std::make_unique<GlyphAtlas>(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
+    }
 
     FrameProcessor::Context ctx {
         .font = &font,
         .charset = &charset,
         .matchAtlas = &matchAtlas,
-        .renderAtlas = &renderAtlas,
+        .renderAtlas = renderAtlas.get(),
         .resampleFilter = resampleFilter,
         .planeW = planeW,
         .planeH = planeH,
@@ -349,93 +504,211 @@ int runVideo(const Options& opts)
     FramePool pool;
     pool.allocate(slotCount, cols, rows, planeW, planeH);
 
-    const int outW = renderAtlas.cellWidth() * cols;
-    const int outH = renderAtlas.cellHeight() * rows;
-    const double fps = info.fps > 0.0 ? info.fps : 24.0;
+    const double sourceFps = info.fps > 0.0 ? info.fps : 24.0;
 
-    VideoManager::VideoWriter writer(outPath, outW, outH, fps);
-    if (!writer.isOpen()) {
-        std::cerr << "asciigen: couldn't open \"" << outPath << "\" for writing\n";
-        return 6;
+    // --fps only ever drops frames to reach a lower rate -- see VideoOptions'
+    // own note on why duplicating frames to fake a higher one isn't supported.
+    const double outputFps =
+        (opts.video.fps > 0.0 && opts.video.fps < sourceFps) ? opts.video.fps : sourceFps;
+
+    // --start-/--end-frame take precedence over their --start-/--end-time
+    // equivalents when both are somehow given; converted to seconds here so
+    // the decode loop below only ever has to reason about one timeline.
+    double startT = 0.0;
+    if (opts.video.startFrame >= 0) startT = opts.video.startFrame / sourceFps;
+    else if (opts.video.startTime >= 0.0) startT = opts.video.startTime;
+
+    double endT = std::numeric_limits<double>::infinity();
+    if (opts.video.endFrame >= 0) endT = (opts.video.endFrame + 1) / sourceFps;
+    else if (opts.video.endTime >= 0.0) endT = opts.video.endTime;
+
+    if (endT <= startT) {
+        std::cerr << "asciigen: --end-time/--end-frame is before --start-time/--start-frame\n";
+        return 4;
     }
 
-    FrameWorkerPool::Manager manager(pool, opts, ctx, workerCount);
+    // Re-estimated from the actual output window and rate rather than the raw
+    // container frame count, which doesn't mean much once trimming and/or
+    // --fps are in play. Used for the progress bar's total below, and (for a
+    // text/ANSI output) written into the header up front, before the real
+    // count is known -- playback (see playTextVideo) counts actual frame
+    // separators rather than trusting that number, so an estimate that turns
+    // out wrong costs nothing worse than a slightly-off progress percentage.
+    int64_t estimatedTotalFrames = info.frameCount;
+    if (info.durationSeconds > 0.0) {
+        const double windowEnd = std::min(endT, info.durationSeconds);
+        if (windowEnd > startT) estimatedTotalFrames = (int64_t)((windowEnd - startT) * outputFps + 0.5);
+    }
 
-    // Ordered save: workers finish in whatever order they finish, but the
-    // muxer needs frames in sequence. `pending` holds whatever's arrived out of
-    // turn until the gap in front of it closes -- see video-roadmap.md item 5's
-    // "ordered save" writeup, this is that, finally built. The slot is freed
-    // (for the decoder to reuse) the moment its frame is copied out, not once
-    // it's actually been written -- the decoder has no reason to wait on
-    // however far behind the muxer might be.
+    int outW = 0, outH = 0;
+    std::optional<VideoManager::VideoWriter> pixelWriter;
+    std::ofstream textOut;
+
+    if (isTextOutput) {
+        textOut.open(outPath, std::ios::binary);
+        if (!textOut) {
+            std::cerr << "asciigen: couldn't open " << outPath << " for writing\n";
+            return 6;
+        }
+
+        textOut << kTextVideoMagic << " fps=" << outputFps << " frames=" << estimatedTotalFrames
+                << " duration=" << (outputFps > 0.0 ? estimatedTotalFrames / outputFps : 0.0) << "\n";
+    } else {
+        outW = renderAtlas->cellWidth() * cols;
+        outH = renderAtlas->cellHeight() * rows;
+
+        pixelWriter.emplace(outPath, outW, outH, outputFps);
+        if (!pixelWriter->isOpen()) {
+            std::cerr << "asciigen: couldn't open " << outPath << " for writing\n";
+            return 6;
+        }
+    }
+
+    // Bounded ordered handoff between however many workers finish rendering (out
+    // of order) and the one thread that writes frames out in sequence -- see
+    // SaveQueue's own note on why capacity exists and why the next-in-line
+    // frame is the one exception to it. Capacity matches workerCount: that's
+    // "one wave" of concurrently-finishing workers' worth of backlog, which is
+    // as much slack as there's ever a reason to want -- a bigger number just
+    // lets the write side fall further behind before anything feels it.
+    //
+    // Both declared unconditionally (one stays empty and unused) rather than
+    // picked with a pointer -- SaveQueue<Image> and SaveQueue<std::string> are
+    // different types, and everything below that needs to outlive this
+    // function's if/else branches (the manager's callback, the saver and
+    // closer threads) would otherwise be referencing a queue that already
+    // went out of scope by the time it runs.
+    SaveQueue<Image> pixelSaveQueue(workerCount);
+    SaveQueue<std::string> textSaveQueue(workerCount);
+
     std::atomic<bool> saverFinished {false};
     std::atomic<int> framesWritten {0};
 
-    std::thread saverThread([&] {
-        std::map<int, Image> pending;
-        int nextToWrite = 0;
-
-        auto writeOne = [&](Image& img) {
-            writer.writeFrame(img);
-            framesWritten.fetch_add(1, std::memory_order_relaxed);
-        };
-
-        for (;;) {
-            const int idx = pool.waitForDone();
-            if (idx < 0) break;   // nothing left, ever
-
-            FrameSlot& slot = pool.slot(idx);
-            const int frameIndex = slot.frameIndex;
-            const Image& src = slot.storage.renderedImage;
-
-            Image copy;
-            if (src.pixels) {
-                copy = Image(src.width, src.height, src.depth);
-                std::memcpy(
-                    copy.pixels, src.pixels, (size_t)src.width * src.height * src.depth
-                );
-            }
-            pool.markFree(idx);
-
-            if (frameIndex == nextToWrite) {
-                writeOne(copy);
-                nextToWrite++;
-
-                for (auto it = pending.find(nextToWrite); it != pending.end();
-                     it = pending.find(nextToWrite)) {
-                    writeOne(it->second);
-                    pending.erase(it);
-                    nextToWrite++;
-                }
-            } else {
-                pending.emplace(frameIndex, std::move(copy));
+    // Each worker pushes its own rendered frame here as soon as it has one --
+    // may block if the relevant queue is full (see SaveQueue), which only
+    // holds up that one worker, never the decoder or any other worker; the
+    // slot it was using is already freed by the time this runs (see
+    // FrameWorkerPool).
+    std::optional<FrameWorkerPool::Manager> manager;
+    if (isTextOutput) {
+        AnsiRenderer::ColorDepth depth = AnsiRenderer::ColorDepth::None;
+        if (outExt == ".ans") {
+            switch (opts.output.color) {
+            case ColorMode::Ansi16: depth = AnsiRenderer::ColorDepth::Ansi16; break;
+            case ColorMode::TrueColor: depth = AnsiRenderer::ColorDepth::TrueColor; break;
+            case ColorMode::None: break;
             }
         }
 
-        writer.finish();
-        saverFinished.store(true, std::memory_order_release);
-    });
+        manager.emplace(
+            pool, opts, ctx, workerCount,
+            [&](int frameIndex, Image&&, std::string&& text) {
+                textSaveQueue.push(frameIndex, std::move(text));
+            },
+            AnsiRenderer::AnsiRenderOptions {
+                .depth = depth,
+                .transparentBackground = opts.backdrop.mode == BackdropMode::Transparent,
+                // Only for .ans -- a .txt frame has to stay pure text with no
+                // escape bytes in it at all, same reason its depth is forced
+                // to None just above. playTextVideo doesn't depend on this
+                // either way: it repositions the cursor itself by counting
+                // each frame's own lines, so a .txt file plays back correctly
+                // with no embedded control codes of its own; this is purely
+                // an extra for a .ans file opened some other way than through
+                // this project's own player.
+                .screenControls = outExt == ".ans"
+            }
+        );
+    } else {
+        manager.emplace(pool, opts, ctx, workerCount, [&](int frameIndex, Image&& img, std::string&&) {
+            pixelSaveQueue.push(frameIndex, std::move(img));
+        });
+    }
 
     // The only thread ever allowed to call reader.nextFrame() -- decode is
-    // inherently sequential internal state, see VideoManager.hpp.
+    // inherently sequential internal state, see VideoManager.hpp. Also where
+    // --start-/--end-time(-frame) and --fps downsampling happen: there's no
+    // seeking (same note), so reaching startT or skipping a frame the target
+    // rate doesn't need still costs decoding it -- just into `scratch`
+    // instead of a pool slot, so a frame nobody will submit never occupies
+    // one. nextOutputTime is recomputed from outFrameIndex each pass rather
+    // than accumulated by repeated += so float drift can't creep in over a
+    // long clip and eventually cost or duplicate a frame at the boundary.
+    // Entirely independent of what kind of output this run is producing --
+    // it only ever feeds decoded pixels into pool slots for
+    // FrameProcessor::run -- so unlike everything above it, it isn't inside
+    // either branch.
     std::thread decoderThread([&] {
-        int frameIndex = 0;
+        int outFrameIndex = 0;
+        int64_t srcFrameIndex = 0;
+        Image scratch;
+
         for (;;) {
+            const double nextOutputTime = startT + outFrameIndex / outputFps;
+            if (nextOutputTime >= endT) break;
+
+            const double srcTime = (double)srcFrameIndex / sourceFps;
+            const double srcFrameEnd = (double)(srcFrameIndex + 1) / sourceFps;
+            srcFrameIndex++;
+            if (srcTime >= endT) break;
+
+            if (srcFrameEnd <= nextOutputTime) {
+                if (!reader.nextFrame(scratch)) break;   // end of stream
+                continue;
+            }
+
             const int idx = pool.waitForFreeSlot();
             if (idx < 0) break;   // pool closed before we ever got here -- shouldn't happen
 
             if (!reader.nextFrame(pool.slot(idx).storage.input)) break;   // end of stream
 
-            pool.submit(idx, frameIndex);
-            frameIndex++;
+            pool.submit(idx, outFrameIndex);
+            outFrameIndex++;
         }
         pool.closeQueue();
+    });
+
+    std::thread saverThread;
+    if (isTextOutput) {
+        saverThread = std::thread([&] {
+            std::string text;
+            while (textSaveQueue.popNextInOrder(text)) {
+                textOut << text << kFrameSeparator;
+                framesWritten.fetch_add(1, std::memory_order_relaxed);
+            }
+            textOut.close();
+            saverFinished.store(true, std::memory_order_release);
+        });
+    } else {
+        saverThread = std::thread([&] {
+            Image img;
+            while (pixelSaveQueue.popNextInOrder(img)) {
+                pixelWriter->writeFrame(img);
+                framesWritten.fetch_add(1, std::memory_order_relaxed);
+            }
+            pixelWriter->finish();
+            saverFinished.store(true, std::memory_order_release);
+        });
+    }
+
+    // The relevant queue's close() can only run once every push() that will
+    // ever happen already has -- i.e. after every worker has exited, which is
+    // after the decoder has stopped submitting. Doing that wait on a fourth
+    // thread (not the main one) is what lets the main thread block in
+    // runUntilDone below without deadlocking against this: it can't wait for
+    // the saver to finish AND be the thing responsible for telling the saver
+    // nothing more is coming.
+    std::thread closerThread([&] {
+        decoderThread.join();
+        manager->join();
+        if (isTextOutput) textSaveQueue.close();
+        else pixelSaveQueue.close();
     });
 
     std::vector<ProgressDisplay::Line> lines;
 
     lines.push_back(ProgressDisplay::Line {[&] {
-        const int64_t total = info.frameCount;
+        const int64_t total = estimatedTotalFrames;
         const int done = framesWritten.load(std::memory_order_relaxed);
         std::string label =
             "overall (" + std::to_string(done) + "/" + (total > 0 ? std::to_string(total) : "?") + ")";
@@ -445,8 +718,15 @@ int runVideo(const Options& opts)
 
     for (int i = 0; i < workerCount; i++) {
         lines.push_back(ProgressDisplay::Line {[&manager, &pool, i] {
-            const int s = manager.currentSlot(i);
-            if (s < 0) return ProgressDisplay::Snapshot {"thread " + std::to_string(i + 1), "idle", 0.f};
+            const int s = manager->currentSlot(i);
+            if (s < 0) {
+                // Distinguishes the two ways a worker can be idle: nothing decoded
+                // yet to give it, vs. it's holding a finished frame the saver
+                // hasn't made room for -- both used to collapse into plain "idle".
+                const char* stage = manager->workerState(i) == FrameWorkerPool::WorkerState::HandingOff
+                    ? "saving" : "decode";
+                return ProgressDisplay::Snapshot {"thread " + std::to_string(i + 1), stage, 0.f};
+            }
 
             FrameSlot& slot = pool.slot(s);
             FrameProgress& p = slot.storage.progress;
@@ -461,9 +741,47 @@ int runVideo(const Options& opts)
         [&] { return saverFinished.load(std::memory_order_acquire); }, lines
     );
 
-    decoderThread.join();
+    // Both should already be finished, or nearly so -- saverFinished only ever
+    // becomes true after the relevant queue closes, which closerThread only
+    // does once decoderThread and every worker are already done. These joins
+    // are just making that explicit rather than relying on it.
+    closerThread.join();
     saverThread.join();
-    manager.join();
+
+    // Real numbers off the finished file, not either writer's own nominal
+    // target -- see VideoWriter's own note on why those two can differ a lot
+    // for a pixel output. durationSeconds comes from frames actually written
+    // over outputFps rather than the source's duration, since trimming/--fps
+    // can make them different on purpose.
+    std::error_code sizeEc;
+    const uint64_t fileBytes = std::filesystem::file_size(outPath, sizeEc);
+    const int writtenFrames = framesWritten.load(std::memory_order_relaxed);
+    const double durationSeconds = outputFps > 0.0 ? writtenFrames / outputFps : 0.0;
+
+    std::cout << "asciigen: wrote " << outPath;
+    if (!sizeEc) std::cout << " (" << formatBytes(fileBytes) << ")";
+
+    if (isTextOutput) {
+        std::cout << " -- " << cols << "x" << rows << " cells, " << outputFps << "fps, " << writtenFrames
+                  << " frames, " << durationSeconds << "s\n";
+        return 0;
+    }
+
+    const double bitrate =
+        (!sizeEc && durationSeconds > 0.0) ? (double)fileBytes * 8.0 / durationSeconds : 0.0;
+    std::cout << " -- " << outW << "x" << outH << ", " << outputFps << "fps, " << writtenFrames
+              << " frames, " << durationSeconds << "s";
+    if (bitrate > 0.0) std::cout << ", " << formatBitrate(bitrate);
+    std::cout << "\n";
+
+    if (bitrate > kBitrateWarningThreshold) {
+        std::cerr << "asciigen: warning: " << outPath << " encoded at roughly "
+                  << formatBitrate(bitrate) << " -- MPEG-4 (the only codec this LGPL build can "
+                  << "write, see VideoManager.hpp) doesn't really have a legal profile/level for "
+                  << "bitrates this high, and some players' decoders will refuse to open it. If it "
+                  << "won't open: try a lower --fps, a smaller --grid-width/--image-width, or "
+                  << "trimming with --start-time/--end-time.\n";
+    }
 
     return 0;
 }
@@ -655,20 +973,33 @@ int run(const Options& opts)
     }
 
     // The actual frame processing runs on a worker thread -- one worker for a
-    // still image, workerCount for video later, identical Manager either way.
+    // still image, workerCount for video, identical Manager either way.
     // Everything else (submission, progress display, waiting) stays right here
     // on the main thread; only FrameProcessor::run itself ever leaves it.
+    //
+    // The rendered image is handed back through onRendered rather than read
+    // from the slot afterward -- FrameStorage no longer holds one at all, see
+    // its own note on why. imageDone is this path's equivalent of video's
+    // saverFinished: a plain flag the single callback sets once the one frame
+    // that will ever exist here has arrived.
+    Image renderedImage;
+    std::atomic<bool> imageDone {false};
+
     pool.submit(0);
     {
-        FrameWorkerPool::Manager manager(pool, opts, ctx, /*workerCount=*/1);
+        FrameWorkerPool::Manager manager(
+            pool, opts, ctx, /*workerCount=*/1,
+            [&](int, Image&& img, std::string&&) {
+                renderedImage = std::move(img);
+                imageDone.store(true, std::memory_order_release);
+            }
+        );
 
         // Blocks THIS thread, not a new one -- see ProgressDisplay.hpp's note on
         // why that's correct now that the work being watched already left the
-        // main thread. Reads pool.slot(0) directly rather than the `frame`
-        // reference below, since that reference isn't declared until the
-        // worker's result is guaranteed ready.
+        // main thread.
         ProgressDisplay::runUntilDone(
-            [&] { return pool.allDone(); },
+            [&] { return imageDone.load(std::memory_order_acquire); },
             {ProgressDisplay::Line {[&] {
                 FrameProgress& p = pool.slot(0).storage.progress;
                 return ProgressDisplay::Snapshot {
@@ -679,11 +1010,11 @@ int run(const Options& opts)
         );
 
         // Explicit, not left to the Manager destructor, purely for thread
-        // hygiene: the worker's acquire/release pair on `state` already
-        // guarantees everything it wrote to `slot.storage` is visible once
-        // allDone() reads true, so this isn't needed for correctness -- it's
-        // here so the worker thread itself is fully wound down before this
-        // scope ends rather than sitting joined-on-exit.
+        // hygiene: onRendered's own store/load pair already guarantees
+        // renderedImage is visible once imageDone reads true, so this isn't
+        // needed for correctness -- it's here so the worker thread itself is
+        // fully wound down before this scope ends rather than sitting
+        // joined-on-exit.
         manager.join();
     }
 
@@ -700,7 +1031,7 @@ int run(const Options& opts)
         const std::filesystem::path path = resolveOutputPath(opts, given);
 
         if (!opts.output.overwrite && std::filesystem::exists(path)) {
-            std::cerr << "asciigen: \"" << path << "\" exists (use --overwrite)\n";
+            std::cerr << "asciigen: " << path << " exists (use --overwrite)\n";
             status = 6;
             continue;
         }
@@ -709,7 +1040,7 @@ int run(const Options& opts)
         bool ok = false;
 
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") {
-            ok = ImageManager::saveImage(path, frame.renderedImage);
+            ok = ImageManager::saveImage(path, renderedImage);
         } else if (ext == ".ans") {
             ok = OutputManager::saveAns(path, frame.text);
         } else if (ext == ".txt") {
@@ -724,9 +1055,18 @@ int run(const Options& opts)
         }
 
         if (!ok) {
-            std::cerr << "asciigen: failed writing \"" << path << "\"\n";
+            std::cerr << "asciigen: failed writing " << path << "\n";
             status = 6;
+            continue;
         }
+
+        std::error_code sizeEc;
+        const uint64_t fileBytes = std::filesystem::file_size(path, sizeEc);
+        std::cout << "asciigen: wrote " << path;
+        if (!sizeEc) std::cout << " (" << formatBytes(fileBytes) << ")";
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg")
+            std::cout << " -- " << renderedImage.width << "x" << renderedImage.height;
+        std::cout << "\n";
     }
 
     return status;

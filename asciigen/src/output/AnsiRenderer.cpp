@@ -47,6 +47,16 @@ std::string render(const CellBuffer& buffer, const Charset& charset, AnsiRenderO
     std::string out;
     out.reserve(buffer.width() * buffer.height() * 42 + buffer.height() * 8);
 
+    // Cursor-to-home, not a full clear -- every frame repaints every cell at
+    // the same fixed grid size (one CellBuffer size for the whole run), so
+    // overwriting in place from the top-left can never leave a previous
+    // frame's glyphs peeking out around the edges the way a partial redraw
+    // could. Used for video playback (see Pipeline.cpp's runVideo/
+    // playTextVideo): embedding this in the saved frame means playing one
+    // back is just printing each string in order, no redraw bookkeeping
+    // needed at the read side at all.
+    if (opts.screenControls) out += ESC "[H";
+
     // Buffers are bottom-up; terminals draw top-down. Reversing here is this
     // function's problem, not the pipeline's.
     for (int y = buffer.height() - 1; y >= 0; y--) {

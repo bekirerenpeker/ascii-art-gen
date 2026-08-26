@@ -21,11 +21,19 @@
 // per worker, later), and this struct is exactly "the thing held per in-flight frame" --
 // splitting them out to dodge the folder convention would just mean threading three more
 // objects through every call that touches a frame instead of the one it already needs.
-// Not every member is always used. A text-only output run never touches `renderedImage`,
-// which just stays at its default-constructed empty state (Image() doesn't allocate until
-// it's given a size) instead of needing a separate code path for that case; only one of
-// structureScratch/bitmaskScratch is ever touched, matching whichever algorithm is
-// selected -- the other sits empty for the run.
+// Not every member is always used: only one of structureScratch/bitmaskScratch is ever
+// touched, matching whichever algorithm is selected -- the other sits empty for the run.
+//
+// Deliberately does NOT hold the rendered pixel output. That used to live here, but for
+// video it meant the entire slot -- input, plane, ditheredPlane, every scratch buffer,
+// all of it, easily tens of MB for a 4K source -- stayed occupied until whatever consumed
+// the render (an ordered save step, running behind a single-threaded encoder) got around
+// to copying it out, long after the actual FrameProcessor::run() work was done. That's
+// what was starving the decoder of free slots to reuse, not the copy itself. Now
+// FrameProcessor::run() renders into a caller-owned Image (see FrameProcessor.hpp), and
+// the slot is free the moment processing finishes -- what happens to the rendered result
+// afterward (SaveQueue, for video; a plain local variable, for a still image) is the
+// caller's business, not this struct's.
 struct FrameStorage
 {
     Image input;            // decoded/loaded source frame -- sized by whatever loads it
@@ -34,7 +42,6 @@ struct FrameStorage
     Image ditheredPlane;      // dithered copy of `plane`, what the algorithm actually reads
     CellBuffer buffer;         // the character grid: glyphs + colours
     std::string text;           // ANSI-rendered output, always produced
-    Image renderedImage;         // rendered pixel output, only if an image-format output was asked for
 
     Structure::Scratch structureScratch;   // only touched when --algo structure
     Bitmask::Scratch bitmaskScratch;       // only touched when --algo bitmask
