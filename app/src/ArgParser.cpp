@@ -361,6 +361,13 @@ Result parse(int argc, char* argv[], Options& out)
             }
             continue;
         }
+        if (n == "play-position") {
+            const std::string v = r.value(n);
+            if (v == "top-left" || v == "top") out.input.playPosition = PlaybackPosition::TopLeft;
+            else if (v == "inline" || v == "here") out.input.playPosition = PlaybackPosition::Inline;
+            else r.fail("unknown --play-position \"" + v + "\" (top-left, inline)");
+            continue;
+        }
 
         // --- video ---
         if (n == "fps") { out.video.fps = r.floatValue(n); continue; }
@@ -453,6 +460,14 @@ Result parse(int argc, char* argv[], Options& out)
         // --- grid ---
         if (n == "grid-width") { out.grid.width = r.intValue(n); continue; }
         if (n == "grid-height") { out.grid.height = r.intValue(n); continue; }
+        if (n == "grid-fit") {
+            const std::string v = r.value(n);
+            if (v == "auto") out.grid.fitAxis = GridFitAxis::Auto;
+            else if (v == "width") out.grid.fitAxis = GridFitAxis::Width;
+            else if (v == "height") out.grid.fitAxis = GridFitAxis::Height;
+            else r.fail("unknown --grid-fit \"" + v + "\" (auto, width, height)");
+            continue;
+        }
         if (n == "grid-brightness") { out.grid.brightness = r.floatValue(n); continue; }
         if (n == "grid-gamma") { out.grid.gamma = r.floatValue(n); continue; }
         if (n == "grid-vibrance") { out.grid.vibrance = r.floatValue(n); continue; }

@@ -80,4 +80,13 @@ TEXT PASSTHROUGH
   of text. Not a full player: no pause, no seeking, no looping, just start to
   end.
 
+  --play-position MODE                                             (top-left)
+      top-left    clear the screen once, then redraw every frame from the
+                  top-left corner -- immune to overflowing the window, since
+                  --grid-fit's own default already sized the grid to fit it.
+      inline      start wherever the cursor already is (below the command
+                  that was run) instead of taking over the screen. A grid
+                  taller than what's left below the prompt can run past the
+                  bottom of the window in this mode.
+
   Every other flag is ignored in this mode.

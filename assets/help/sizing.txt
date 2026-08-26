@@ -10,7 +10,8 @@ Three different sizes, resolved in this order. They are easy to confuse.
 
   One given          the other follows from the source's shape
   Both given         used exactly, shape ignored
-  Neither            terminal size when printing, otherwise 160 wide
+  Neither            fits the terminal when printing (--grid-fit decides how,
+                     default auto), otherwise 160 wide
 
   Cells are twice as tall as they are wide, and that is accounted for, so a
   square photo gives a grid about twice as wide as it is tall.

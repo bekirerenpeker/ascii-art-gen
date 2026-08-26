@@ -14,7 +14,7 @@ COMMON
   --out PATH               write here. Repeatable. Format from the extension
   --algo NAME              ramp | bitmask | structure          (structure)
   --charset NAME           ascii | blocks | ramp               (ascii)
-  --grid-width N           width in characters             (terminal width)
+  --grid-width N           width in characters      (fits the terminal; see --grid-fit)
   --color MODE             truecolor | ansi16 | none          (truecolor)
   --image-width N          output picture width in pixels
   --backdrop MODE          none | auto | #RRGGBB                   (none)

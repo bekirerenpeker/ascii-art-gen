@@ -36,15 +36,12 @@ std::string padTo(std::string s, size_t width)
     return s;
 }
 
-std::string renderOneLine(const Line& line)
+std::string renderOneLine(const Line& line, int totalWidth, bool unicode)
 {
     const Snapshot snap = line.read();
     const float fraction = std::clamp(snap.fraction, 0.f, 1.f);
     const std::string label = padTo(snap.label, kLabelWidth);
     const std::string stage = padTo(snap.stage, kStageWidth);
-
-    int cols = 0, rows = 0;
-    const int totalWidth = (Terminal::getSize(cols, rows) && cols > 20) ? std::min(cols - 1, 100) : 70;
 
     // Budget: label, " [", stage, "] [", bar, "]", " NNN%". Both label and stage
     // are fixed-width now, so this (and therefore barWidth) stays constant across
@@ -61,7 +58,6 @@ std::string renderOneLine(const Line& line)
     // are known to ship a font that does. '#'/'.' always renders correctly
     // everywhere, so that is the safe default; the Unicode bar is only used
     // where Terminal::supportsUnicodeBlocks() has an actual signal to go on.
-    const bool unicode = Terminal::supportsUnicodeBlocks();
     const char* fillGlyph = unicode ? "\xE2\x96\x88" : "#";    // U+2588 FULL BLOCK
     const char* emptyGlyph = unicode ? "\xE2\x96\x91" : ".";   // U+2591 LIGHT SHADE
 
@@ -97,6 +93,19 @@ void Renderer::draw(const std::vector<Line>& lines)
 {
     if (!Terminal::isTty()) return;
 
+    // Computed once per draw, not once per line -- getSize() is a real
+    // syscall (GetConsoleScreenBufferInfo on Windows), and calling it once
+    // per worker line on every redraw was measured contributing to the whole
+    // draw() call taking visibly longer than intended under heavy CPU load
+    // (many worker threads all running at once, as an ANSI/text video output
+    // does -- see FrameWorkerPool's own extra per-frame render call): a bar
+    // meant to redraw every ~80ms was instead landing every several hundred,
+    // and looking like it filled in top-to-bottom rather than all at once,
+    // because the delay was inside THIS loop, not between calls to it.
+    int cols = 0, rows = 0;
+    const int totalWidth = (Terminal::getSize(cols, rows) && cols > 20) ? std::min(cols - 1, 100) : 70;
+    const bool unicode = Terminal::supportsUnicodeBlocks();
+
     // Move back up over the previous draw before writing the new one, or every
     // redraw would scroll the terminal by `lines.size()` instead of overwriting.
     if (m_linesDrawn > 0) std::printf("\x1b[%dA", m_linesDrawn);
@@ -104,7 +113,7 @@ void Renderer::draw(const std::vector<Line>& lines)
     for (const Line& line : lines) {
         // \x1b[2K clears the whole line first -- a shorter new line (stage name
         // changed length) would otherwise leave a trailing fragment of the old one.
-        std::printf("\r\x1b[2K%s\n", renderOneLine(line).c_str());
+        std::printf("\r\x1b[2K%s\n", renderOneLine(line, totalWidth, unicode).c_str());
     }
 
     // A shrinking line count (never happens yet -- video will be able to, once a
@@ -132,6 +141,12 @@ void Renderer::finish()
 
 void runUntilDone(const std::function<bool()>& isDone, const std::vector<Line>& lines, int intervalMs)
 {
+    // Hidden for the whole draw loop, not just while a redraw is in flight --
+    // a blinking cursor sitting wherever \x1b[%dA last left it (visibly
+    // "zipping around" as the bar redraws) is a display artifact, not
+    // something the cursor's real position ever meant anything by here.
+    Terminal::CursorGuard cursorGuard;
+
     Renderer renderer;
     while (!isDone()) {
         renderer.draw(lines);

@@ -1,4 +1,5 @@
 #include "FrameWorkerPool.hpp"
+#include "core/Profiler.hpp"
 
 namespace FrameWorkerPool {
 
@@ -18,6 +19,8 @@ Manager::Manager(
     m_workers.reserve(workerCount);
     for (int i = 0; i < workerCount; i++) {
         m_workers.emplace_back([this, i] {
+            Profiler::nameThread("worker " + std::to_string(i + 1));
+
             int slotIndex;
             // Set here, not just at the bottom of the loop below: the very
             // first wait, before any frame has ever arrived, needs the same

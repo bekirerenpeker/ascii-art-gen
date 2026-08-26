@@ -8,6 +8,14 @@ SIZE
 
   --grid-width N        width in characters                (terminal width)
   --grid-height N       height in characters                 (from the shape)
+  --grid-fit MODE       auto | width | height                        (auto)
+      Only matters when NEITHER width nor height above is given. auto picks
+      the largest grid that fits inside the terminal on BOTH axes at once,
+      keeping the source's shape -- width/height instead always size to that
+      one terminal dimension and derive the other from the source's aspect,
+      which can run past the terminal's other edge (a portrait source at a
+      wide terminal, sized to the full width, needing far more rows than the
+      window is tall).
 
   See --help sizing for how this interacts with picture size.
 

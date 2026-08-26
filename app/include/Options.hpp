@@ -111,6 +111,26 @@ enum class ImageAlign
     BottomRight,
 };
 
+// Where a text/ANSI video (see Pipeline.cpp's runVideo/playTextVideo) starts
+// drawing when played back. TopLeft clears the screen once, before the first
+// frame, then homes the cursor before every frame after that too -- so a
+// shorter later frame can never leave a longer earlier one's glyphs peeking
+// out around it. Inline starts wherever the cursor already was (right under
+// whatever command was run) and only ever moves up by exactly the previous
+// frame's own line count, never further -- correct for a plain .txt file,
+// which can't carry a cursor-home escape of its own to fall back on, but can
+// run past the bottom of the window for a grid taller than what's left below
+// the prompt. TopLeft is the default specifically because --grid-fit's own
+// default (auto) already sizes the grid to fit inside the terminal, so it
+// never overflows there either way -- Inline exists for whoever wants the
+// video to start below their own scrollback instead of taking over the
+// screen.
+enum class PlaybackPosition
+{
+    TopLeft,
+    Inline,
+};
+
 struct InputOptions
 {
     std::string path;
@@ -124,6 +144,10 @@ struct InputOptions
     // options be tuned against a real frame without waiting for the whole
     // clip. No effect on an input that isn't a video.
     int previewFrame = -1;
+
+    // --play-position: only meaningful when the input turns out to be a saved
+    // text/ANSI video (see PlaybackPosition's own note) -- ignored otherwise.
+    PlaybackPosition playPosition = PlaybackPosition::TopLeft;
 };
 
 struct SourceOptions
@@ -172,11 +196,28 @@ struct CharsetOptions
     std::vector<std::pair<char32_t, char32_t>> ranges;
 };
 
+// Which terminal dimension --grid-fit uses when both grid.width and
+// grid.height are 0 (see resolveGridSize in Pipeline.cpp). Width and Height
+// match the terminal-basis behaviour this project always had; Auto is new --
+// the largest grid that fits inside BOTH terminal dimensions at once while
+// keeping the source's own aspect, so a portrait source at a wide terminal
+// doesn't come out taller than the window (Width alone would size it to the
+// full terminal width regardless of how many rows that implies).
+enum class GridFitAxis
+{
+    Auto,
+    Width,
+    Height,
+};
+
 struct GridOptions
 {
     // 0 derives from the source aspect; 0 for both falls back to the terminal.
     int width = 0;
     int height = 0;
+
+    // Only consulted in the "0 for both" case above.
+    GridFitAxis fitAxis = GridFitAxis::Auto;
 
     float brightness = 1.f;
     float gamma = 1.f;

@@ -199,6 +199,59 @@ candidates so far, likely to be added piecemeal:
   output fps drops frames; a 2x-speed render at 2x output fps doesn't).
 - **Frame/time interval selection** — a start/end trim, by frame index or by timestamp.
 
+## 13. Audio passthrough
+
+Not touched at all yet -- video in, video out currently drops any audio track entirely.
+The goal is passthrough, not processing: whatever audio the source has should reach the
+output unedited (no re-encoding artifacts introduced on purpose), just muxed alongside the
+rendered video frames instead of being discarded.
+
+Real complication: it has to stay in sync with whatever the video side did to get there.
+`--start-time`/`--end-time`/`--start-frame`/`--end-frame` trim the video to a window: the
+audio needs the same window cut from it, not the whole original track. `--fps` downsamples
+which video frames get kept, but does NOT speed up or slow down playback -- the output's
+wall-clock duration is unchanged (see VideoOptions' own note on why frames are only ever
+dropped, never invented) -- so the audio track's own rate and duration need no adjustment
+at all in that case, just needs to still be cut to the same trimmed window. Text/ANSI video
+output has no channel for this at all, so this is scoped to pixel video output only.
+
+## 14. Reduce frame-to-frame flicker
+
+Confirmed real, not imagined: re-encoding an animation with flat, stable colour regions
+and no real-world sensor noise (a Bad Apple-style clip) looks genuinely good, while a
+live-action source visibly flickers even where the actual scene is static, because natural
+sensor grain/lighting noise most human eyes read as "the same flat wall" is enough
+per-pixel variation to flip the glyph a cell's dithered, selected against from one frame to
+the next. Dithering isn't temporally coherent either -- its pattern has no notion of "what
+did this cell look like last frame."
+
+Worth investigating: some form of temporal hysteresis in glyph selection (biasing toward
+the previous frame's choice for a cell unless a new candidate scores meaningfully better,
+not just marginally), and/or a dithering approach that's stable across frames instead of
+effectively fresh noise every time. Not attempted yet -- noted here as the natural next
+thing to look at, not urgent (the flicker is present but described as only mildly
+noticeable, not something blocking real use of the video output as it stands).
+
+## 15. Parallel or segmented video encoding
+
+The pixel-video save step is single-threaded by construction -- one `AVCodecContext`,
+`writeFrame` called strictly in frame order -- and was observed to be the actual bottleneck
+for most real clips: workers spend far more time blocked handing a finished frame to a full
+`SaveQueue` than idle waiting on the decoder (see FrameWorkerPool::WorkerState -- this is
+exactly what the "saving" label means). Growing the queue's capacity doesn't fix this, only
+delays when the backpressure shows up, since the queue still fills at whatever rate the one
+encoder drains it at.
+
+A real fix means encoding more than one frame at a time. Two directions, neither tried yet:
+- The encoder's own internal thread_count (distinct from the decoder-side one already tried
+  and reverted, see VideoManager.cpp) -- worth testing, though the native mpeg4 encoder's
+  threading support is limited, and every non-keyframe already depends on the reconstructed
+  output of the one immediately before it, which caps how much frame-level parallelism is
+  even possible at the current gop_size=2 (see its own note on why that value was chosen).
+- Splitting a clip into independent segments, each encoded on its own thread/writer, then
+  concatenated -- real complexity of its own (keyframe alignment at segment boundaries,
+  exact frame-count bookkeeping, an actual concat step), not attempted.
+
 ---
 
 ## Open questions to resolve during item 1

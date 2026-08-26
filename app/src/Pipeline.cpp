@@ -31,6 +31,7 @@
 #include <set>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 using namespace App;
 
@@ -73,6 +74,14 @@ bool parseHeaderField(const std::string& line, const std::string& key, double& o
     return true;
 }
 
+// How much of the file to have in flight at once during playback -- big
+// enough to amortise a read syscall over many frames for a typical grid size,
+// small enough that memory use stays flat for the length of the video
+// instead of scaling with it. Not a limit on any single frame's size: a
+// frame bigger than this still gets read in full, just over more than one
+// fill() call.
+constexpr size_t kPlaybackChunkSize = 256 * 1024;
+
 // Plays a text/ANSI video back in the terminal: print a frame, wait out its
 // share of the video's own frame rate, print the next. Repositions the
 // cursor itself by counting the previous frame's own lines and moving back up
@@ -84,34 +93,82 @@ bool parseHeaderField(const std::string& line, const std::string& key, double& o
 // of where this relative move already put the cursor. Paced off a fixed start
 // time rather than sleeping a flat 1/fps after each frame, so per-frame
 // printing overhead doesn't accumulate into drift over a long clip.
-int playTextVideo(const std::string& headerLine, const std::string& body)
+//
+// Streams `file` rather than reading it whole first -- a several-thousand-
+// frame clip's saved file can run into the hundreds of MB to low GB
+// (especially a colored .ans, at maybe a hundred-plus bytes per cell), and
+// reading all of that into one std::string before the first frame ever shows
+// was measured to cost a long stall up front and, worse, kept degrading
+// through the whole rest of playback (memory pressure from one enormous
+// allocation, not anything algorithmic in how the frames were split out of
+// it). `buffer` only ever holds one chunk plus at most one frame's worth of
+// leftover from the read before it, so memory use here stays flat regardless
+// of how long the video is.
+int playTextVideo(std::ifstream& file, const std::string& headerLine, PlaybackPosition position)
 {
+    ASCIIGEN_PROFILE("playTextVideo", "playback");
+
     double fps = 24.0;
     parseHeaderField(headerLine, "fps", fps);
     if (fps <= 0.0) fps = 24.0;
 
+    Terminal::CursorGuard cursorGuard;
+
+    const bool topLeft = position == PlaybackPosition::TopLeft;
+
+    // Once, before the first frame -- not per frame, and not for Inline,
+    // which is specifically for starting below whatever's already on screen
+    // rather than taking it over.
+    if (topLeft) std::fputs("\x1b[H\x1b[2J", stdout);
+
     const std::chrono::duration<double> frameDuration(1.0 / fps);
     const auto start = std::chrono::steady_clock::now();
 
-    size_t pos = 0;
+    std::vector<char> chunk(kPlaybackChunkSize);
+    std::string buffer;
+    bool eof = false;
+
     int frameIndex = 0;
     int previousLines = 0;
+
     for (;;) {
-        const size_t sep = body.find(kFrameSeparator, pos);
-        if (sep == std::string::npos) break;
+        size_t sep = buffer.find(kFrameSeparator);
+        while (sep == std::string::npos && !eof) {
+            ASCIIGEN_PROFILE("fill buffer", "playback");
+            file.read(chunk.data(), (std::streamsize)chunk.size());
+            const std::streamsize got = file.gcount();
+            if (got > 0) buffer.append(chunk.data(), (size_t)got);
+            if (got < (std::streamsize)chunk.size()) eof = true;
+            sep = buffer.find(kFrameSeparator);
+        }
+        if (sep == std::string::npos) break;   // no more complete frames in the file
 
-        // Plain stdio throughout, not std::cout -- mixing the two here would
-        // risk the cursor-move escape and the frame text landing in whichever
-        // order their separate buffers happened to flush in, the same
-        // interleaving hazard ProgressDisplay.cpp's own drawing avoids by
-        // sticking to one output mechanism throughout.
-        if (previousLines > 0) std::printf("\x1b[%dA", previousLines);
-        std::fwrite(body.data() + pos, 1, sep - pos, stdout);
-        std::fflush(stdout);
+        {
+            ASCIIGEN_PROFILE("print frame", "playback");
 
-        previousLines = (int)std::count(body.begin() + (std::ptrdiff_t)pos, body.begin() + (std::ptrdiff_t)sep, '\n');
+            // Plain stdio throughout, not std::cout -- mixing the two here
+            // would risk the cursor-move escape and the frame text landing in
+            // whichever order their separate buffers happened to flush in,
+            // the same interleaving hazard ProgressDisplay.cpp's own drawing
+            // avoids by sticking to one output mechanism throughout.
+            //
+            // TopLeft homes the cursor absolutely before every frame,
+            // including the first -- immune to a shorter frame leaving a
+            // longer one's leftover glyphs around it, and simpler than
+            // tracking line counts at all. Inline only ever moves up by
+            // exactly the PREVIOUS frame's own line count, starting from
+            // wherever the cursor already was for the first frame -- correct
+            // for a plain .txt file, which can carry no cursor-home escape
+            // of its own to fall back on.
+            if (topLeft) std::fputs("\x1b[H", stdout);
+            else if (previousLines > 0) std::printf("\x1b[%dA", previousLines);
+            std::fwrite(buffer.data(), 1, sep, stdout);
+            std::fflush(stdout);
+        }
+
+        if (!topLeft) previousLines = (int)std::count(buffer.begin(), buffer.begin() + (std::ptrdiff_t)sep, '\n');
         frameIndex++;
-        pos = sep + 1;
+        buffer.erase(0, sep + 1);
 
         std::this_thread::sleep_until(start + frameIndex * frameDuration);
     }
@@ -121,6 +178,8 @@ int playTextVideo(const std::string& headerLine, const std::string& body)
 
 int passthrough(const Options& opts)
 {
+    ASCIIGEN_PROFILE("passthrough", "pipeline");
+
     std::ifstream file(opts.input.path, std::ios::binary);
     if (!file) {
         std::cerr << "asciigen: cannot read \"" << opts.input.path << "\"\n";
@@ -140,10 +199,8 @@ int passthrough(const Options& opts)
     std::string firstLine;
     std::getline(file, firstLine);
 
-    if (firstLine.rfind(kTextVideoMagic, 0) == 0) {
-        std::string body((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        return playTextVideo(firstLine, body);
-    }
+    if (firstLine.rfind(kTextVideoMagic, 0) == 0)
+        return playTextVideo(file, firstLine, opts.input.playPosition);
 
     file.clear();
     file.seekg(0);
@@ -211,6 +268,10 @@ Charset buildCharset(const Options& opts)
 // dimensions rather than an Image so a video (which only has VideoInfo's
 // width/height, not a decoded frame, at the point this needs to run) can call
 // it the same way a still image does.
+//
+// --grid-fit only matters when NEITHER --grid-width nor --grid-height was
+// given -- giving either of those already fully determines the other via the
+// aspect math below and has nothing to do with the terminal at all.
 void resolveGridSize(const Options& opts, int srcW, int srcH, int& cols, int& rows)
 {
     cols = opts.grid.width;
@@ -220,9 +281,29 @@ void resolveGridSize(const Options& opts, int srcW, int srcH, int& cols, int& ro
 
     if (cols <= 0 && rows <= 0) {
         int termCols = 0, termRows = 0;
-        if (Terminal::isTty() && Terminal::getSize(termCols, termRows) && termCols > 0)
+        const bool haveTerminal =
+            Terminal::isTty() && Terminal::getSize(termCols, termRows) && termCols > 0 && termRows > 0;
+
+        if (!haveTerminal) {
+            cols = 160;
+        } else if (opts.grid.fitAxis == GridFitAxis::Width) {
             cols = termCols;
-        else cols = 160;
+        } else if (opts.grid.fitAxis == GridFitAxis::Height) {
+            rows = termRows;
+        } else {
+            // Auto: the largest grid that fits inside BOTH terminal dimensions
+            // at once while keeping the source's own shape, the same idea as
+            // an image's "contain" fit -- rather than always sizing to the
+            // terminal's width and letting whatever rows that implies overflow
+            // the window's height, which is exactly what a portrait source at
+            // a wide terminal used to do. Whichever axis the terminal is
+            // relatively SHORTER on than the content needs is the one that
+            // ends up constraining the result; the other is derived from it
+            // by the same aspect math below, same as the Width/Height cases.
+            const double idealAspect = 2.0 * srcW / srcH;   // cols:rows ratio that reproduces the source's shape
+            if ((double)termCols / termRows > idealAspect) rows = termRows;
+            else cols = termCols;
+        }
     }
 
     if (cols > 0 && rows <= 0) rows = std::max(1, (int)std::lround((double)cols * srcH / (srcW * 2.0)));
@@ -497,8 +578,20 @@ int runVideo(const Options& opts)
     // Not final values -- see video-roadmap.md item 8. Slack beyond workerCount
     // is what keeps a worker from ever waiting on the decoder for a free slot in
     // the common case (decode is cheap next to a frame's own select/render cost).
+    //
+    // One core deliberately left unclaimed (when there's more than one to
+    // begin with): workerCount here plus the decoder, saver and closer
+    // threads already oversubscribes every core by a few threads, and this
+    // project's own progress display -- running on the thread that's
+    // otherwise just waiting -- was measured going visibly choppy under that
+    // load (updates arriving every several hundred ms instead of the ~80ms it
+    // asks for) specifically for a text/ANSI output, where every worker's
+    // extra AnsiRenderer::render() call adds real CPU time on top of the
+    // usual per-frame work. Giving the display's own thread a fighting chance
+    // at getting scheduled promptly is worth marginally more contention
+    // between the workers themselves.
     const unsigned hw = std::thread::hardware_concurrency();
-    const int workerCount = std::max(1, (int)(hw ? hw : 4));
+    const int workerCount = std::max(1, (int)(hw > 1 ? hw - 1 : hw ? hw : 4));
     const int slotCount = workerCount + 3;
 
     FramePool pool;
@@ -639,6 +732,8 @@ int runVideo(const Options& opts)
     // FrameProcessor::run -- so unlike everything above it, it isn't inside
     // either branch.
     std::thread decoderThread([&] {
+        Profiler::nameThread("decoder");
+
         int outFrameIndex = 0;
         int64_t srcFrameIndex = 0;
         Image scratch;
@@ -671,6 +766,8 @@ int runVideo(const Options& opts)
     std::thread saverThread;
     if (isTextOutput) {
         saverThread = std::thread([&] {
+            Profiler::nameThread("saver");
+
             std::string text;
             while (textSaveQueue.popNextInOrder(text)) {
                 textOut << text << kFrameSeparator;
@@ -681,6 +778,8 @@ int runVideo(const Options& opts)
         });
     } else {
         saverThread = std::thread([&] {
+            Profiler::nameThread("saver");
+
             Image img;
             while (pixelSaveQueue.popNextInOrder(img)) {
                 pixelWriter->writeFrame(img);

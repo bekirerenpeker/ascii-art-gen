@@ -107,6 +107,25 @@ bool supportsUnicodeBlocks()
 #endif
 }
 
+// Gated on isTty() here rather than left to each caller to remember -- a
+// redirected/piped run (a log file, a captured test run) has no cursor to
+// hide, and would otherwise get these two escapes landing as literal bytes
+// in whatever it was writing, the same class of bug ProgressDisplay::Renderer
+// already guards its own drawing against.
+void hideCursor()
+{
+    if (!isTty()) return;
+    std::fputs("\x1b[?25l", stdout);
+    std::fflush(stdout);
+}
+
+void showCursor()
+{
+    if (!isTty()) return;
+    std::fputs("\x1b[?25h", stdout);
+    std::fflush(stdout);
+}
+
 bool getSize(int& cols, int& rows)
 {
 #ifdef _WIN32

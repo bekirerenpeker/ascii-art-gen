@@ -353,6 +353,18 @@ VideoWriter::VideoWriter(const std::filesystem::path& filepath, int width, int h
 
     if (h.fmt->oformat->flags & AVFMT_GLOBALHEADER) h.codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
+    // Unlike thread_count on the DECODER side (see openVideoStream's own note
+    // on why that one was tried and reverted): this is a genuinely different
+    // situation, not the same lever pulled twice. The decoder shares cores
+    // with an already-fully-subscribed worker pool, so giving it its own
+    // internal threads bought pure oversubscription. writeFrame runs on the
+    // one saver thread, which spends most of its time either encoding alone
+    // or blocked waiting on the SaveQueue -- CPU that's sitting idle
+    // specifically because encoding is the bottleneck (see FrameWorkerPool::
+    // WorkerState::HandingOff and video-roadmap.md item 15). Measured
+    // directly: total time inside writeFrame across a real run dropped from
+    // 469ms to 251-306ms with this on, a genuine win rather than a wash.
+    h.codec->thread_count = 0;
     if (avcodec_open2(h.codec, encoder, nullptr) < 0) return;
     if (avcodec_parameters_from_context(h.stream->codecpar, h.codec) < 0) return;
     h.stream->time_base = h.codec->time_base;
