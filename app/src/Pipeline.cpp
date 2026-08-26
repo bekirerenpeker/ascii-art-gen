@@ -1011,6 +1011,16 @@ int renderTextToMedia(const Options& opts)
 {
     ASCIIGEN_PROFILE("renderTextToMedia", "pipeline");
 
+    // Missed on the first pass of this function -- every other path that can
+    // reach ProgressDisplay (run(), runVideo()) does this before the first
+    // redraw, which is what keeps Terminal::supportsUnicodeBlocks()'s answer
+    // actually true: without enableUtf8() first, the console is still
+    // decoding stdout under its default (non-UTF-8) codepage while the bar's
+    // own block-character bytes go out, which garbles them regardless of
+    // whether the terminal itself can display them fine.
+    Terminal::enableAnsi();
+    Terminal::enableUtf8();
+
     std::ifstream file(opts.input.path, std::ios::binary);
     if (!file) {
         std::cerr << "asciigen: cannot read \"" << opts.input.path << "\"\n";
