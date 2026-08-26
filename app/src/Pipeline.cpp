@@ -430,6 +430,47 @@ int distinctGlyphCount(const GlyphAtlas& atlas)
     return (int)shapes.size();
 }
 
+// A charset built from a fixed Unicode range (Charset::blocks/braille) has no
+// way to know ahead of time whether the FONT actually has every one of those
+// codepoints -- FT_Load_Char silently substitutes the font's own .notdef
+// glyph for one that's missing rather than failing (see Font::hasGlyph's own
+// note on why that's invisible to the caller otherwise), so an unfiltered
+// charset lets the algorithm select glyphs that render as a placeholder box
+// in the middle of otherwise-correct output -- discovered this exact way:
+// Consolas (first in this project's own default-font search order) is
+// missing some of Charset::blocks()'s quadrant glyphs (U+2596-U+259F), and
+// they showed up as boxed "?" tofu once colour stopped masking them.
+//
+// Left untouched if filtering would remove everything: distinctGlyphCount's
+// own check downstream already covers total failure, and an empty charset
+// would be worse than a fully-unsupported one.
+void filterUnsupportedGlyphs(Charset& charset, const Font& font, const std::string& fontName)
+{
+    std::u32string kept;
+    std::vector<char32_t> dropped;
+
+    for (uint16_t i = 0; i < charset.size(); i++) {
+        const char32_t cp = charset.codepointAt(i);
+        if (font.hasGlyph(cp)) kept += cp;
+        else dropped.push_back(cp);
+    }
+
+    if (dropped.empty() || kept.empty()) return;
+
+    std::ostringstream list;
+    for (size_t i = 0; i < dropped.size(); i++) {
+        if (i > 0) list << ' ';
+        list << "U+" << std::hex << std::uppercase << (uint32_t)dropped[i];
+    }
+
+    std::cerr << "asciigen: \"" << fontName << "\" is missing " << dropped.size()
+              << (dropped.size() == 1 ? " glyph" : " glyphs")
+              << " this charset wanted -- skipped so none render as a placeholder box: "
+              << list.str() << "\n";
+
+    charset = Charset(kept);
+}
+
 // The whole video path: a decode thread feeding a FramePool, a FrameWorkerPool
 // running the exact same FrameProcessor::run every still image uses, and a save
 // thread writing finished frames back out in order. Kept as its own function
@@ -524,6 +565,8 @@ int runVideo(const Options& opts)
 
     auto fontHolder = std::make_unique<Font>(fontPath);
     Font& font = *fontHolder;
+
+    filterUnsupportedGlyphs(charset, font, fontPath.filename().string());
 
     const int matchH = std::max(2, opts.font.matchSize);
     GlyphAtlas matchAtlas(font, charset, std::max(1, matchH / 2), matchH);
@@ -984,6 +1027,7 @@ int run(const Options& opts)
     }
     Font& font = *fontHolder;
 
+    filterUnsupportedGlyphs(charset, font, fontPath.filename().string());
 
     // Width is half the height, always, so the cell grid can never be broken by
     // the choice of face.

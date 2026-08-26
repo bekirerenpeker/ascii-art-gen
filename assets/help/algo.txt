@@ -15,10 +15,24 @@ asciigen -- algorithm
 
 SHARED BY EVERY ALGORITHM
 
-  --algo-allow-background                                        (off)
+  --algo-allow-background [0|1]                                  (off)
       Solve a second colour per cell instead of drawing on one backdrop.
       Much higher fidelity -- and it stops looking like text and starts
-      looking like coloured blocks. Try it with --charset blocks.
+      looking like coloured blocks. Try it with --charset blocks. Takes an
+      explicit 0/1 to flip it back off from a preset that turns it on
+      (--preset blocks does); bare --algo-allow-background alone means 1.
+
+      Turning it OFF for --charset blocks specifically is not just lower
+      fidelity: any glyph that isn't the full block leaves the part of the
+      cell it doesn't ink completely black, since there is no backdrop
+      colour left to paint that part with -- coverage is what's encoding
+      brightness there, and coverage stops meaning brightness the moment
+      part of the cell has no colour under it at all. On a smooth photo,
+      most cells land on a partial glyph, so the result reads as riddled
+      with black holes rather than shaded. --preset blocks leaves this on
+      by default for exactly that reason -- turning it off is a real,
+      known trade-off, not a bug, and there's no --charset blocks
+      workaround for it today.
 
   --algo-brightness-gamma F                                      (1.0)
       Below 1 brightens the foreground. See --help grid for why output is

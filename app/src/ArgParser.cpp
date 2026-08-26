@@ -554,7 +554,13 @@ Result parse(int argc, char* argv[], Options& out)
             else r.fail("unknown algorithm \"" + v + "\" (ramp, bitmask, structure)");
             continue;
         }
-        if (n == "algo-allow-background") { out.algo.allowBackground = true; continue; }
+        if (n == "algo-allow-background") {
+            out.algo.allowBackground = true;
+
+            std::string v;
+            if (r.optionalValue(v)) out.algo.allowBackground = boolValue(v);
+            continue;
+        }
         if (n == "no-algo-allow-background") { out.algo.allowBackground = false; continue; }
         if (n == "algo-brightness-gamma") { out.algo.brightnessGamma = r.floatValue(n); continue; }
         if (n == "algo-ramp-chars") { out.algo.rampChars = r.value(n); continue; }
