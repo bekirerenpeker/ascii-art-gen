@@ -76,11 +76,11 @@ RGB ansi16ToRgb(int code)
     return table[idx];
 }
 
-// One row (no newline in it) -> however many cells it actually has. `charset`
-// is always updated when given; `cells` only when the caller wants the full
-// per-cell result rather than just the glyphs seen (collectGlyphs's whole
-// point is skipping that second part).
-void parseRow(const std::string& row, Charset* charset, std::vector<Cell>* cells)
+// One row (no newline in it) -> however many cells it actually has.
+void parseRow(
+    const std::string& row, Charset& charset, std::vector<Cell>& cells,
+    const std::function<bool(char32_t)>& isSupported, std::set<char32_t>* dropped
+)
 {
     RGB fg {255, 255, 255}, bg {0, 0, 0};
 
@@ -127,10 +127,15 @@ void parseRow(const std::string& row, Charset* charset, std::vector<Cell>* cells
         }
 
         const char32_t cp = decodeUtf8(row, i);
-        if (charset) {
-            const int idx = charset->append(cp);
-            if (cells) cells->push_back({(uint16_t)idx, fg, bg});
+
+        char32_t use = cp;
+        if (isSupported && !isSupported(cp)) {
+            if (dropped) dropped->insert(cp);
+            use = U' ';
         }
+
+        const int idx = charset.append(use);
+        cells.push_back({(uint16_t)idx, fg, bg});
     }
 }
 
@@ -160,18 +165,16 @@ void forEachRow(const std::string& text, PerRow perRow)
 
 }   // namespace
 
-void collectGlyphs(const std::string& text, Charset& charset)
-{
-    forEachRow(text, [&](const std::string& row) { parseRow(row, &charset, nullptr); });
-}
-
-void parse(const std::string& text, Charset& charset, CellBuffer& buffer)
+void parse(
+    const std::string& text, Charset& charset, CellBuffer& buffer,
+    const std::function<bool(char32_t)>& isSupported, std::set<char32_t>* dropped
+)
 {
     std::vector<std::vector<Cell>> rows;
 
     forEachRow(text, [&](const std::string& row) {
         std::vector<Cell> cells;
-        parseRow(row, &charset, &cells);
+        parseRow(row, charset, cells, isSupported, dropped);
         rows.push_back(std::move(cells));
     });
 

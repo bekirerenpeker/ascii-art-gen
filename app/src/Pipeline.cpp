@@ -1065,57 +1065,43 @@ int renderTextToMedia(const Options& opts)
         return 6;
     }
 
-    // Charset built from whatever glyphs the file actually uses, not from
-    // --charset -- there is no selection running here for that flag to mean
-    // anything to. Gathered in its own pass first (over every frame, for a
-    // video) so one GlyphAtlas covers every glyph the whole file ever uses;
-    // rebuilding the atlas mid-render every time a new one showed up would
-    // work too, just wastefully -- this way it's built exactly once.
-    // gridRows is grabbed off the first frame at the same time (a frame's
-    // newline count, same as its row count -- see AnsiRenderer::render): the
-    // same number renderH's own fallback below needs, and it doesn't change
-    // frame to frame within one file.
-    Charset charset;
-    std::string stillFrameText;
-    int gridRows = 0;
-
-    if (isVideo) {
-        ASCIIGEN_PROFILE("collect glyphs", "font");
-        TextFrameReader collectReader(file);
-        std::string frameText;
-        bool first = true;
-        while (collectReader.next(frameText)) {
-            AnsiParser::collectGlyphs(frameText, charset);
-            if (first) {
-                gridRows = (int)std::count(frameText.begin(), frameText.end(), '\n');
-                first = false;
-            }
-        }
-    } else {
-        stillFrameText.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-        AnsiParser::collectGlyphs(stillFrameText, charset);
-        gridRows = (int)std::count(stillFrameText.begin(), stillFrameText.end(), '\n');
-    }
-
+    // Font resolved and loaded up front -- everything from here on runs as
+    // one real streaming pass, video included. There used to be a whole
+    // separate pass over the file first (AnsiParser::collectGlyphs, over
+    // every frame) just to learn every glyph the file would ever use before
+    // building one GlyphAtlas and filtering out whatever the font couldn't
+    // cover. That pass had no progress feedback at all, so for any file of
+    // real size it showed up as a long, silent delay before the progress bar
+    // even appeared -- exactly the "loading the whole ansi file upfront"
+    // symptom, because that's really what it was doing, just chunked rather
+    // than read into one string. Filtering per-codepoint instead (see
+    // AnsiParser::parse's `isSupported`) means an unsupported glyph is
+    // substituted the instant it's first seen, with no separate pass and no
+    // charset reindexing ever needed, so frame 1 can be parsed, rendered and
+    // handed to the writer as soon as it's read.
     const std::filesystem::path fontPath = resolveFont(opts);
     if (!std::filesystem::exists(fontPath)) {
         std::cerr << "asciigen: font not found: " << fontPath.string() << "\n";
         return 7;
     }
-
     Font font(fontPath);
-    filterUnsupportedGlyphs(charset, font, fontPath.filename().string());
 
-    // Same render-size resolution the still-image/video paths already use --
-    // see either of their own copies of this for why the fallback chain is
-    // what it is.
-    int renderH = opts.font.renderSize;
-    if (renderH <= 0)
-        renderH = opts.output.imageHeight > 0
-                      ? ImageRenderer::suggestedGlyphHeight(std::max(1, gridRows), opts.output.imageHeight)
-                      : 32;
-    renderH = std::max(2, renderH);
-    GlyphAtlas renderAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
+    std::set<char32_t> droppedCodepoints;
+    const auto isGlyphSupported = [&](char32_t cp) { return font.hasGlyph(cp); };
+
+    auto warnDropped = [&] {
+        if (droppedCodepoints.empty()) return;
+        std::ostringstream list;
+        bool firstItem = true;
+        for (char32_t cp : droppedCodepoints) {
+            if (!firstItem) list << ' ';
+            list << "U+" << std::hex << std::uppercase << (uint32_t)cp;
+            firstItem = false;
+        }
+        std::cerr << "asciigen: \"" << fontPath.filename().string() << "\" is missing "
+                  << droppedCodepoints.size() << (droppedCodepoints.size() == 1 ? " glyph" : " glyphs")
+                  << " this file used -- rendered as a space instead: " << list.str() << "\n";
+    };
 
     ImageManager::setPngCompression(opts.output.pngCompression);
 
@@ -1143,8 +1129,21 @@ int renderTextToMedia(const Options& opts)
     };
 
     if (!isVideo) {
+        std::string stillFrameText;
+        stillFrameText.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+
+        Charset charset;
         CellBuffer buffer;
-        AnsiParser::parse(stillFrameText, charset, buffer);
+        AnsiParser::parse(stillFrameText, charset, buffer, isGlyphSupported, &droppedCodepoints);
+        warnDropped();
+
+        int renderH = opts.font.renderSize;
+        if (renderH <= 0)
+            renderH = opts.output.imageHeight > 0
+                          ? ImageRenderer::suggestedGlyphHeight(std::max(1, buffer.height()), opts.output.imageHeight)
+                          : 32;
+        renderH = std::max(2, renderH);
+        GlyphAtlas renderAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
 
         renderOpts.backgroundColor = canvasBackdrop(buffer);
         Image rendered;
@@ -1164,16 +1163,10 @@ int renderTextToMedia(const Options& opts)
         return 0;
     }
 
-    // Video: a second pass over the file, from the start again -- the first
-    // pass (collecting glyphs above) already ran the original stream dry.
-    std::ifstream renderFile(opts.input.path, std::ios::binary);
-    if (!renderFile) {
-        std::cerr << "asciigen: cannot read \"" << opts.input.path << "\"\n";
-        return 3;
-    }
-    std::string discardHeader;
-    std::getline(renderFile, discardHeader);
-    TextFrameReader reader(renderFile);
+    // Video: `file` is still sitting right after the header line, so this
+    // just keeps reading it -- no need to reopen or rewind anything, since
+    // there's no earlier pass that already ran it dry.
+    TextFrameReader reader(file);
 
     // Written here, renamed to outPath only once rendering finishes -- same
     // reason and same pattern as runVideo's own tempPath (see its note):
@@ -1191,31 +1184,90 @@ int renderTextToMedia(const Options& opts)
     int outW = 0, outH = 0;
     bool writeFailed = false;
 
-    std::thread worker([&] {
+    // Parsing/rendering one frame and encoding the PREVIOUS one used to run
+    // fully sequentially on one thread -- reading frame N+1 never started
+    // until frame N's writeFrame() call had already returned, so encoding
+    // (especially FFV1's, meaningfully slower per frame than MPEG-4's own,
+    // see VideoManager.hpp) sat on the critical path with nothing overlapping
+    // it. Split into a producer (read/parse/render) and a consumer (encode/
+    // write) connected by the same bounded SaveQueue runVideo's own real
+    // video pipeline uses, for the same reason: while the consumer is inside
+    // a slow writeFrame(), the producer can already be preparing the next
+    // frame instead of waiting on it. Capacity is small on purpose -- there's
+    // exactly one producer here, not a worker pool racing ahead of a single
+    // saver, so there's nothing to gain from a deep backlog, just memory
+    // spent holding rendered frames the consumer hasn't gotten to yet.
+    SaveQueue<Image> saveQueue(4);
+
+    std::thread producer([&] {
         std::string frameText;
         CellBuffer buffer;
+        Charset charset;
+        GlyphAtlas renderAtlas;
+        int renderH = 0;
+        int frameIndex = 0;
 
         while (reader.next(frameText)) {
-            AnsiParser::parse(frameText, charset, buffer);
+            const uint16_t sizeBefore = charset.size();
+            AnsiParser::parse(frameText, charset, buffer, isGlyphSupported, &droppedCodepoints);
+
+            if (frameIndex == 0) {
+                renderH = opts.font.renderSize;
+                if (renderH <= 0)
+                    renderH = opts.output.imageHeight > 0
+                                  ? ImageRenderer::suggestedGlyphHeight(
+                                        std::max(1, buffer.height()), opts.output.imageHeight
+                                    )
+                                  : 32;
+                renderH = std::max(2, renderH);
+            }
+
+            // Rebuilt whenever a frame's parse actually grew the charset --
+            // for most files that's just once, right after frame 1: whatever
+            // small vocabulary a charset preset or algorithm settled into
+            // gets reused frame after frame from there on, so a rebuild past
+            // the first frame is the exception, not something every frame
+            // pays for. `|| frameIndex == 0` covers the pathological case of
+            // a first frame that adds nothing at all (e.g. every cell a
+            // space already in an empty charset -- still grows it from 0,
+            // but this is here so the atlas is never left default-built
+            // regardless).
+            if (charset.size() != sizeBefore || frameIndex == 0)
+                renderAtlas = GlyphAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
 
             renderOpts.backgroundColor = canvasBackdrop(buffer);
             Image rendered;
             ImageRenderer::renderToSize(buffer, renderAtlas, renderOpts, rendered);
 
-            if (!writer) {
-                outW = rendered.width;
-                outH = rendered.height;
+            saveQueue.push(frameIndex++, std::move(rendered));
+        }
+
+        saveQueue.close();
+    });
+
+    std::thread consumer([&] {
+        Image img;
+        bool first = true;
+
+        // writeFrame()'s own return value isn't checked below -- matching
+        // runVideo's real video pipeline, which doesn't either (see its
+        // saverThread). Keeping the queue draining regardless is what
+        // matters here: if this stopped early instead, the producer could
+        // block forever inside push() once the queue filled up with nothing
+        // left popping it.
+        while (saveQueue.popNextInOrder(img)) {
+            if (first) {
+                outW = img.width;
+                outH = img.height;
                 writer.emplace(tempPath, outW, outH, sourceFps);
                 if (!writer->isOpen()) {
                     writeFailed = true;
-                    break;
+                    writer.reset();
                 }
+                first = false;
             }
 
-            if (!writer->writeFrame(rendered)) {
-                writeFailed = true;
-                break;
-            }
+            if (writer) writer->writeFrame(img);
             framesWritten.fetch_add(1, std::memory_order_relaxed);
         }
 
@@ -1234,7 +1286,9 @@ int renderTextToMedia(const Options& opts)
     }});
     ProgressDisplay::runUntilDone([&] { return renderDone.load(std::memory_order_acquire); }, lines);
 
-    worker.join();
+    producer.join();
+    consumer.join();
+    warnDropped();
 
     if (writeFailed || !writer) {
         std::cerr << "asciigen: couldn't open " << tempPath << " for writing\n";
