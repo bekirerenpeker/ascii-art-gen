@@ -167,6 +167,13 @@ struct SourceOptions
     int sharpenRadius = 1;
 
     int blurRadius = 0;
+
+    // Three different things, not one flag with modes: a real photo negative
+    // (invert) also swaps complementary hues, where the other two hold hue
+    // fixed and flip just one of lightness/saturation. See ImageFilters.hpp.
+    bool invert = false;
+    bool invertBrightness = false;
+    bool invertSaturation = false;
 };
 
 struct FontOptions

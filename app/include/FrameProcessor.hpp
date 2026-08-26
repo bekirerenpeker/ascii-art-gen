@@ -6,8 +6,16 @@
 #include "core/FrameStorage.hpp"
 #include "font/Font.hpp"
 #include "font/GlyphAtlas.hpp"
+#include "output/ImageRenderer.hpp"
 
 namespace FrameProcessor {
+
+// App::Options' own enums -> ImageRenderer's -- shared so a caller building
+// an ImageRenderOptions from the same App::Options fields (Pipeline.cpp's
+// renderTextToMedia, alongside run() itself) doesn't need its own copy of
+// this mapping.
+ImageRenderer::Fit toFit(App::ImageFit f);
+ImageRenderer::Align toAlign(App::ImageAlign a);
 
 // Everything FrameProcessor::run needs that does NOT change frame to frame -- built once
 // (by Pipeline::run for a still image; once before spinning up video workers, later) and

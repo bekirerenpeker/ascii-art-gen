@@ -56,13 +56,17 @@ class VideoReader
 // not as a full open -- opens and immediately closes the demuxer.
 bool looksLikeVideo(const std::filesystem::path& filepath);
 
-// Encodes and muxes frames into one video file. Codec is fixed to MPEG-4 part 2
-// (AV_CODEC_ID_MPEG4) rather than made configurable yet -- it is FFmpeg's own
-// native encoder, present with zero extra runtime dependencies in the LGPL build
-// this project fetches (see lib/ffmpeg/CMakeLists.txt); H.264 needs libx264
-// (GPL, not in that build) and the LGPL-safe alternatives here (libopenh264,
-// libvpx) need their own external shared libraries this project doesn't vendor.
-// Worth revisiting once that's sorted out -- not a permanent ceiling.
+// Encodes and muxes frames into one video file. Two codecs, chosen by the
+// output extension rather than a separate flag -- .mkv gets AV_CODEC_ID_FFV1
+// (genuinely lossless, encoded as planar RGB so not even chroma-subsampled --
+// every pixel this project rendered comes back out bit-for-bit unchanged),
+// anything else gets AV_CODEC_ID_MPEG4 same as before. Both are FFmpeg's own
+// native encoders, present with zero extra runtime dependencies in the LGPL
+// build this project fetches (see lib/ffmpeg/CMakeLists.txt); H.264 needs
+// libx264 (GPL, not in that build) and the LGPL-safe alternatives here
+// (libopenh264, libvpx) need their own external shared libraries this
+// project doesn't vendor. Worth revisiting once that's sorted out -- not a
+// permanent ceiling on the lossy side.
 class VideoWriter
 {
   public:

@@ -52,6 +52,15 @@ FORMATS
   count, duration) up front and a marker between frames. Not meant to be
   cat'd -- see --help input for what happens when one is given back in.
 
+  .mkv specifically means lossless (FFV1), not just another pixel container --
+  every other extension above is lossy MPEG-4. Bigger files, no compression
+  artifacts, bit-exact. Needs a player with an FFV1 decoder to open -- VLC or
+  mpv, not Windows' built-in one, which doesn't ship one and will say the file
+  is an unsupported/unknown format no matter how low the bitrate is. Not a
+  general-purpose delivery format (most wallpaper/media tools expect .mp4);
+  good for archival or a source to re-encode from without already having lost
+  quality to MPEG-4 first.
+
 
 PICTURE SIZE
 

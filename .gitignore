@@ -1,7 +1,7 @@
 # Build output
 build/
-out/
-output/
+/out/
+/output/
 cmake-build-*/
 
 # CMake artifacts (in case of an in-source configure)

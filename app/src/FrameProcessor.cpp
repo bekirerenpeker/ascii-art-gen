@@ -17,8 +17,9 @@ using namespace App;
 
 namespace FrameProcessor {
 
-namespace {
-
+// Not anonymous-namespace-local: Pipeline.cpp's renderTextToMedia reuses
+// these too, to build the exact same ImageRenderOptions a live render does
+// from the same App::Options fields, rather than re-deriving the mapping.
 ImageRenderer::Fit toFit(ImageFit f)
 {
     switch (f) {
@@ -47,6 +48,8 @@ ImageRenderer::Align toAlign(ImageAlign a)
     }
     return ImageRenderer::Align::Center;
 }
+
+namespace {
 
 AnsiRenderer::ColorDepth toDepth(ColorMode c)
 {
@@ -85,6 +88,9 @@ void extractAlphaSource(const Image& input, Image& alphaSource, bool wanted)
 
 void applySourceFilters(Image& img, const Options& opts)
 {
+    if (opts.source.invert) ImageFilters::invert(img);
+    if (opts.source.invertBrightness) ImageFilters::invertBrightness(img);
+    if (opts.source.invertSaturation) ImageFilters::invertSaturation(img);
     if (opts.source.autoLevels)
         ImageFilters::autoLevels(img, opts.source.autoLevelsLow, opts.source.autoLevelsHigh);
     if (opts.source.levels)

@@ -416,6 +416,12 @@ Result parse(int argc, char* argv[], Options& out)
             continue;
         }
         if (n == "source-blur") { out.source.blurRadius = r.intValue(n); continue; }
+        if (n == "source-invert") { out.source.invert = true; continue; }
+        if (n == "no-source-invert") { out.source.invert = false; continue; }
+        if (n == "source-invert-brightness") { out.source.invertBrightness = true; continue; }
+        if (n == "no-source-invert-brightness") { out.source.invertBrightness = false; continue; }
+        if (n == "source-invert-saturation") { out.source.invertSaturation = true; continue; }
+        if (n == "no-source-invert-saturation") { out.source.invertSaturation = false; continue; }
 
         // --- font ---
         if (n == "font-path") { out.font.path = r.value(n); continue; }

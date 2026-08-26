@@ -1,5 +1,6 @@
 #include "file_management/VideoManager.hpp"
 #include "core/Profiler.hpp"
+#include <algorithm>
 #include <iostream>
 
 extern "C" {
@@ -288,16 +289,29 @@ VideoWriter::VideoWriter(const std::filesystem::path& filepath, int width, int h
 
     if (width <= 0 || height <= 0 || fps <= 0.0) return;
 
-    avformat_alloc_output_context2(&h.fmt, nullptr, nullptr, filepath.string().c_str());
+    // Pipeline.cpp writes to "<real name>.part" and renames to the real name
+    // only once finished (see its own note on why), so filepath here often
+    // isn't the real destination -- both the muxer guess below (which reads
+    // straight off this extension) and the FFV1-vs-MPEG4 choice need the
+    // extension MINUS that suffix, not what's literally on disk right now.
+    std::filesystem::path formatHintPath = filepath;
+    if (formatHintPath.extension() == ".part") formatHintPath.replace_extension("");
+
+    avformat_alloc_output_context2(&h.fmt, nullptr, nullptr, formatHintPath.string().c_str());
     if (!h.fmt) {
         std::cout << "couldnt determine a container format for \"" << filepath << "\"\n";
         return;
     }
 
-    // See VideoManager.hpp's note on VideoWriter: fixed to MPEG-4 part 2, the one
-    // video encoder guaranteed present with no extra runtime dependency in this
-    // project's LGPL FFmpeg build.
-    const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+    // .mkv = lossless (FFV1), chosen by extension like every other video
+    // container decision in this project. See VideoManager.hpp.
+    std::string ext = formatHintPath.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return (char)std::tolower(c);
+    });
+    const bool lossless = ext == ".mkv";
+
+    const AVCodec* encoder = avcodec_find_encoder(lossless ? AV_CODEC_ID_FFV1 : AV_CODEC_ID_MPEG4);
     if (!encoder) return;
 
     h.stream = avformat_new_stream(h.fmt, nullptr);
@@ -311,45 +325,28 @@ VideoWriter::VideoWriter(const std::filesystem::path& filepath, int width, int h
     const AVRational timeBase = av_d2q(1.0 / fps, 1000000);
     h.codec->width = width;
     h.codec->height = height;
-    h.codec->pix_fmt = AV_PIX_FMT_YUV420P;
+    // BGR0: packed RGB, no YUV round-trip at all -- FFV1 then compresses
+    // that losslessly, so the output is bit-exact. (This build's FFV1 has no
+    // plain 8-bit GBRP, only high-bit-depth variants -- checked directly via
+    // `ffmpeg -h encoder=ffv1`.) YUV420P stays lossy for MPEG-4, which can't
+    // be exact anyway.
+    h.codec->pix_fmt = lossless ? AV_PIX_FMT_BGR0 : AV_PIX_FMT_YUV420P;
     h.codec->time_base = timeBase;
     h.codec->framerate = av_inv_q(timeBase);
-    // Was 12 (a typical natural-video GOP). Dropped after a real quality bug:
-    // P-frames drifted visibly worse the further they sat from the last
-    // I-frame, and for THIS content that's structural, not a tuning problem --
-    // each glyph cell one macroblock roughly aligns with is independently
-    // near-random frame to frame (dithering isn't temporally coherent, and
-    // glyph selection can flip between two similarly-scored but visually
-    // different shapes for the same cell), which is close to a worst case for
-    // motion-compensated prediction. Confirmed directly: re-encoding the same
-    // clip with gop_size 12 produced visible horizontal banding by the last
-    // P-frame of a GOP that a same-position I-frame didn't have; gop_size 1
-    // (all-intra) removed it completely but roughly tripled file size; 2 --
-    // at most one P-frame of drift between resets -- looked identical to
-    // all-intra on the same frames while costing about half as much size
-    // increase (~2.2x here vs ~3.4x). Not re-tuned per clip; a future
-    // improvement, not this fix's job.
-    h.codec->gop_size = 2;
 
-    // Tried and reverted: an rc_max_rate/rc_buffer_size ceiling here, meant to
-    // fix a specific file (2560x4544 @ 60fps) a strict player rejected as
-    // "unsupported format" -- its real bitrate was 118 Mbps against a
-    // MPEG-4 Simple Profile tag that doesn't legally go anywhere near that.
-    // Measured effect: it knocked a normal file's overshoot down from 1.65x to
-    // about 1.3x (24.3 -> 18.6 Mbps for a 1080p source), visibly softer for no
-    // reason since that file already played fine -- while the actual target,
-    // whose content needs more bits per macroblock than any legal quantizer
-    // can give up, barely moved (118 -> 112 Mbps) and still doesn't play.
-    // Confirmed directly by re-encoding one of this project's own rendered
-    // outputs through plain `ffmpeg -c:v mpeg4 -maxrate -bufsize`: it logged
-    // "rc buffer underflow ... max bitrate possibly too small" on nearly every
-    // frame and still came out oversized (our av_log_set_level above is what
-    // keeps that same warning from ever surfacing through this writer). A real
-    // capacity limit of MPEG-4 Part 2 at that resolution/frame rate, not
-    // something a bit_rate number can paper over -- fixing that file for real
-    // would mean encoding fewer pixels or fewer frames per second, not a
-    // tighter ceiling that only costs quality on every other file instead.
-    h.codec->bit_rate = (int64_t)width * height * 4;
+    if (!lossless) {
+        // gop_size 2 (was 12): longer GOPs drifted visibly on this content,
+        // since dithering/glyph choice isn't temporally coherent frame to
+        // frame -- see git history for the measured comparison. FFV1 has no
+        // such knob; it's intra-only and has no bit_rate to set either.
+        h.codec->gop_size = 2;
+
+        // Loose average target, not a real cap -- MPEG-4 can't be made to
+        // respect a hard ceiling on this content without visible quality
+        // loss on every file that already worked; see git history for why
+        // rc_max_rate/rc_buffer_size were tried and reverted.
+        h.codec->bit_rate = (int64_t)width * height * 4;
+    }
 
     if (h.fmt->oformat->flags & AVFMT_GLOBALHEADER) h.codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
@@ -384,7 +381,7 @@ VideoWriter::VideoWriter(const std::filesystem::path& filepath, int width, int h
     h.packet = av_packet_alloc();
     if (!h.frame || !h.packet) return;
 
-    h.frame->format = AV_PIX_FMT_YUV420P;
+    h.frame->format = h.codec->pix_fmt;
     h.frame->width = width;
     h.frame->height = height;
     if (av_frame_get_buffer(h.frame, 0) < 0) return;
@@ -412,7 +409,7 @@ bool VideoWriter::writeFrame(const Image& frameImg)
 
     if (!h.sws) {
         h.sws = sws_getContext(
-            w, hgt, AV_PIX_FMT_RGB24, w, hgt, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr,
+            w, hgt, AV_PIX_FMT_RGB24, w, hgt, h.codec->pix_fmt, SWS_BILINEAR, nullptr, nullptr,
             nullptr
         );
         if (!h.sws) return false;

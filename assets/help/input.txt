@@ -70,6 +70,19 @@ TEXT PASSTHROUGH
 
     asciigen art.ans
 
+  Give it a .ans or .txt file AND an --out/--format, and it renders the saved
+  glyphs/colours back out as real media instead of printing them -- an image
+  if the file is a still, a video if it's a saved video (see --help output),
+  matched against whichever format --out/--format asks for; asking for the
+  wrong kind (an image format for a saved video, say) is an error, not a
+  guess. No algorithm runs again -- the glyph and colour choices already
+  exist in the file -- so --charset/--algo-*/--dither-*/--edge-* have nothing
+  to do here, but --image-width/height/fit/align/margin/scale/aspect and
+  --backdrop still apply, the same as any other image/video output.
+
+    asciigen art.ans --out art.png
+    asciigen clip.ans --out clip.mp4
+
   This exists because `cat` and `type` do not switch the console into VT mode,
   so an .ans file printed with them comes out as literal escape sequences
   instead of colour.
