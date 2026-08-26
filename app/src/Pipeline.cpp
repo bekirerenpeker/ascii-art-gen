@@ -284,12 +284,21 @@ void resolveGridSize(const Options& opts, int srcW, int srcH, int& cols, int& ro
         const bool haveTerminal =
             Terminal::isTty() && Terminal::getSize(termCols, termRows) && termCols > 0 && termRows > 0;
 
+        // -1: every row printed ends in its own newline (see AnsiRenderer::
+        // render), including the last one, so N rows leaves the cursor on
+        // row N+1, not row N -- filling every one of the terminal's own
+        // termRows rows therefore always scrolls it by exactly one line,
+        // regardless of how it's rendered (a still image's single print, or
+        // a video's top-left-homed redraw). One fewer row is what actually
+        // fits without moving the window.
+        const int usableRows = std::max(1, termRows - 1);
+
         if (!haveTerminal) {
             cols = 160;
         } else if (opts.grid.fitAxis == GridFitAxis::Width) {
             cols = termCols;
         } else if (opts.grid.fitAxis == GridFitAxis::Height) {
-            rows = termRows;
+            rows = usableRows;
         } else {
             // Auto: the largest grid that fits inside BOTH terminal dimensions
             // at once while keeping the source's own shape, the same idea as
@@ -301,7 +310,7 @@ void resolveGridSize(const Options& opts, int srcW, int srcH, int& cols, int& ro
             // ends up constraining the result; the other is derived from it
             // by the same aspect math below, same as the Width/Height cases.
             const double idealAspect = 2.0 * srcW / srcH;   // cols:rows ratio that reproduces the source's shape
-            if ((double)termCols / termRows > idealAspect) rows = termRows;
+            if ((double)termCols / termRows > idealAspect) rows = usableRows;
             else cols = termCols;
         }
     }
