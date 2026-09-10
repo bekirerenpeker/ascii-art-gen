@@ -69,7 +69,15 @@ struct ImageRenderOptions
 
 // The three steps, separately usable. render() is the natural size the grid and
 // atlas imply; scale() resamples that; compose() places it on a canvas.
-Image render(const CellBuffer& buffer, const GlyphAtlas& atlas);
+//
+// render() takes its result as an out-parameter, resized only if its current
+// size doesn't already match -- a still image calls it once, but a video calls
+// it every frame, and the common case (no --image-width/height/scale/margin/
+// aspect) is the ENTIRE render: reusing `out`'s buffer there means zero
+// allocation after the first frame. scale() and compose() stay by-value: they
+// only run at all on the rarer sized/margined/aspect-reshaped path, where the
+// source and destination can be genuinely different sizes from call to call.
+void render(const CellBuffer& buffer, const GlyphAtlas& atlas, Image& out);
 
 Image scale(const Image& src, int width, int height);
 
@@ -77,8 +85,13 @@ Image compose(
     const Image& src, int canvasW, int canvasH, Align align, RGB background, int margin = 0
 );
 
-// render -> scale (per fit) -> compose (per align). What save() runs.
-Image renderToSize(const CellBuffer& buffer, const GlyphAtlas& atlas, ImageRenderOptions opts);
+// render -> scale (per fit) -> compose (per align). What save() runs. `out` is
+// reused the same way render()'s own is; on the sized/margined/aspect path it
+// ends up holding whatever compose() produced, which is generally a different
+// size than the frame before -- render() re-checks its own size next call
+// regardless, so this never goes stale, it just doesn't stay warm across a
+// switch between the two paths.
+void renderToSize(const CellBuffer& buffer, const GlyphAtlas& atlas, ImageRenderOptions opts, Image& out);
 
 // Given a grid that many rows tall and a target pixel height, the atlas cell
 // height that lands closest without being upscaled into blur or rendered huge

@@ -1,30 +1,38 @@
 #include "Pipeline.hpp"
 #include "core/Profiler.hpp"
 #include "Assets.hpp"
+#include "FrameProcessor.hpp"
+#include "FrameWorkerPool.hpp"
+#include "ProgressDisplay.hpp"
+#include "SaveQueue.hpp"
 #include "bitmap/Resample.hpp"
-#include "bitmap/Bitmask.hpp"
-#include "bitmap/Ramp.hpp"
-#include "bitmap/Structure.hpp"
-#include "core/CellBuffer.hpp"
 #include "core/Charset.hpp"
+#include "core/FramePool.hpp"
 #include "dithering/Dithering.hpp"
 #include "edges/Edges.hpp"
 #include "file_management/ImageManager.hpp"
 #include "file_management/OutputManager.hpp"
-#include "filters/CellFilters.hpp"
-#include "filters/ImageFilters.hpp"
-#include "filters/Palettes.hpp"
 #include "font/Font.hpp"
 #include "font/GlyphAtlas.hpp"
+#include "output/AnsiParser.hpp"
 #include "output/AnsiRenderer.hpp"
 #include "output/ImageRenderer.hpp"
 #include "output/Terminal.hpp"
+#include "file_management/VideoManager.hpp"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <set>
+#include <sstream>
+#include <thread>
+#include <vector>
 
 using namespace App;
 
@@ -41,8 +49,155 @@ std::string lowerExtension(const std::filesystem::path& p)
     return ext;
 }
 
+// A text/ANSI video (see runVideo) is a plain .txt/.ans file with one extra
+// header line in front and this byte between every frame -- 0x1E, ASCII's own
+// "record separator", chosen specifically because it can't appear in either a
+// UTF-8 glyph or any of AnsiRenderer's escape sequences, so splitting on it
+// can never mistake real frame content for a boundary.
+constexpr const char* kTextVideoMagic = "ASCIIGEN-VIDEO";
+constexpr char kFrameSeparator = '\x1E';
+
+// Reads "key=value" pairs out of the header line written by runVideo below.
+// Unknown keys are ignored rather than rejected, so a line a future version
+// adds more fields to still parses here.
+bool parseHeaderField(const std::string& line, const std::string& key, double& out)
+{
+    const std::string needle = key + "=";
+    const size_t pos = line.find(needle);
+    if (pos == std::string::npos) return false;
+
+    try {
+        out = std::stod(line.substr(pos + needle.size()));
+    } catch (...) {
+        return false;
+    }
+
+    return true;
+}
+
+// How much of the file to have in flight at once -- big enough to amortise a
+// read syscall over many frames for a typical grid size, small enough that
+// memory use stays flat for the length of the video instead of scaling with
+// it. Not a limit on any single frame's size: a frame bigger than this still
+// gets read in full, just over more than one fill.
+constexpr size_t kTextVideoChunkSize = 256 * 1024;
+
+// Streams frames out of a saved text/ANSI video one at a time -- shared by
+// playTextVideo (prints each one) and renderTextToMedia (renders each one
+// back to pixels), neither of which needs to know how the other consumes a
+// frame. Reads `file` in chunks rather than all at once first: a several-
+// thousand-frame clip's saved file can run into the hundreds of MB to low GB
+// (especially a colored .ans, at maybe a hundred-plus bytes per cell), and
+// reading all of that up front was measured costing a long stall before the
+// first frame and, worse, kept degrading through the rest of the run --
+// memory pressure from one enormous allocation, not anything algorithmic in
+// how frames were split out of it. `m_buffer` only ever holds one chunk plus
+// at most one frame's worth of leftover from the read before it, so memory
+// use here stays flat regardless of how long the video is.
+class TextFrameReader
+{
+  public:
+    explicit TextFrameReader(std::ifstream& file) : m_file(file), m_chunk(kTextVideoChunkSize) {}
+
+    // Fills `outFrame` with the next frame's raw text (separator excluded)
+    // and returns true, or returns false once no more complete frames remain.
+    bool next(std::string& outFrame)
+    {
+        size_t sep = m_buffer.find(kFrameSeparator);
+        while (sep == std::string::npos && !m_eof) {
+            m_file.read(m_chunk.data(), (std::streamsize)m_chunk.size());
+            const std::streamsize got = m_file.gcount();
+            if (got > 0) m_buffer.append(m_chunk.data(), (size_t)got);
+            if (got < (std::streamsize)m_chunk.size()) m_eof = true;
+            sep = m_buffer.find(kFrameSeparator);
+        }
+        if (sep == std::string::npos) return false;
+
+        outFrame.assign(m_buffer, 0, sep);
+        m_buffer.erase(0, sep + 1);
+        return true;
+    }
+
+  private:
+    std::ifstream& m_file;
+    std::vector<char> m_chunk;
+    std::string m_buffer;
+    bool m_eof = false;
+};
+
+// Plays a text/ANSI video back in the terminal: print a frame, wait out its
+// share of the video's own frame rate, print the next. Repositions the
+// cursor itself by counting the previous frame's own lines and moving back up
+// that many -- rather than relying on a .ans frame's own embedded cursor-home
+// escape (see AnsiRenderer::render's screenControls) -- so a plain .txt
+// video, which can't carry any escape bytes of its own, redraws in place
+// exactly the same way a colored one does. Harmless overlap for a .ans file:
+// its own embedded home-cursor lands at the same absolute position regardless
+// of where this relative move already put the cursor. Paced off a fixed start
+// time rather than sleeping a flat 1/fps after each frame, so per-frame
+// printing overhead doesn't accumulate into drift over a long clip.
+int playTextVideo(std::ifstream& file, const std::string& headerLine, PlaybackPosition position)
+{
+    ASCIIGEN_PROFILE("playTextVideo", "playback");
+
+    double fps = 24.0;
+    parseHeaderField(headerLine, "fps", fps);
+    if (fps <= 0.0) fps = 24.0;
+
+    Terminal::CursorGuard cursorGuard;
+
+    const bool topLeft = position == PlaybackPosition::TopLeft;
+
+    // Once, before the first frame -- not per frame, and not for Inline,
+    // which is specifically for starting below whatever's already on screen
+    // rather than taking it over.
+    if (topLeft) std::fputs("\x1b[H\x1b[2J", stdout);
+
+    const std::chrono::duration<double> frameDuration(1.0 / fps);
+    const auto start = std::chrono::steady_clock::now();
+
+    TextFrameReader reader(file);
+    std::string frameText;
+    int frameIndex = 0;
+    int previousLines = 0;
+
+    while (reader.next(frameText)) {
+        {
+            ASCIIGEN_PROFILE("print frame", "playback");
+
+            // Plain stdio throughout, not std::cout -- mixing the two here
+            // would risk the cursor-move escape and the frame text landing in
+            // whichever order their separate buffers happened to flush in,
+            // the same interleaving hazard ProgressDisplay.cpp's own drawing
+            // avoids by sticking to one output mechanism throughout.
+            //
+            // TopLeft homes the cursor absolutely before every frame,
+            // including the first -- immune to a shorter frame leaving a
+            // longer one's leftover glyphs around it, and simpler than
+            // tracking line counts at all. Inline only ever moves up by
+            // exactly the PREVIOUS frame's own line count, starting from
+            // wherever the cursor already was for the first frame -- correct
+            // for a plain .txt file, which can carry no cursor-home escape
+            // of its own to fall back on.
+            if (topLeft) std::fputs("\x1b[H", stdout);
+            else if (previousLines > 0) std::printf("\x1b[%dA", previousLines);
+            std::fwrite(frameText.data(), 1, frameText.size(), stdout);
+            std::fflush(stdout);
+        }
+
+        if (!topLeft) previousLines = (int)std::count(frameText.begin(), frameText.end(), '\n');
+        frameIndex++;
+
+        std::this_thread::sleep_until(start + frameIndex * frameDuration);
+    }
+
+    return 0;
+}
+
 int passthrough(const Options& opts)
 {
+    ASCIIGEN_PROFILE("passthrough", "pipeline");
+
     std::ifstream file(opts.input.path, std::ios::binary);
     if (!file) {
         std::cerr << "asciigen: cannot read \"" << opts.input.path << "\"\n";
@@ -54,8 +209,42 @@ int passthrough(const Options& opts)
     Terminal::enableAnsi();
     Terminal::enableUtf8();
 
+    // Peeking at just the first line (then rewinding if it's not a match)
+    // keeps the common case -- an ordinary still-image .txt/.ans someone
+    // wants echoed as-is -- exactly as cheap as it was before this format
+    // existed: no reason to read a plain file fully into memory just to
+    // check whether it's the other kind.
+    std::string firstLine;
+    std::getline(file, firstLine);
+
+    if (firstLine.rfind(kTextVideoMagic, 0) == 0)
+        return playTextVideo(file, firstLine, opts.input.playPosition);
+
+    file.clear();
+    file.seekg(0);
     std::cout << file.rdbuf();
     return 0;
+}
+
+// --preview: decode a video only up to (and keep) one frame, for the still-image
+// path below to treat exactly like any other loaded image. No seeking -- there
+// isn't one, see VideoManager.hpp -- so reaching frame N costs decoding 0..N
+// regardless; this is the cheapest a specific frame can ever be gotten to, and
+// frame 0 (the default) is instant.
+Image loadPreviewFrame(const std::filesystem::path& path, int frameIndex)
+{
+    VideoManager::VideoReader reader(path);
+    if (!reader.isOpen()) return Image();
+
+    Image frame;
+    for (int i = 0; i <= frameIndex; i++) {
+        if (!reader.nextFrame(frame)) {
+            std::cerr << "asciigen: video ended after " << i << " frame(s), can't preview frame "
+                      << frameIndex << "\n";
+            return Image();
+        }
+    }
+    return frame;
 }
 
 // A system font is the default rather than a bundled one, so the project ships
@@ -93,8 +282,15 @@ Charset buildCharset(const Options& opts)
 }
 
 // Cells are twice as tall as they are wide, so a grid that matches the source's
-// shape needs half as many rows as the raw aspect suggests.
-void resolveGridSize(const Options& opts, const Image& img, int& cols, int& rows)
+// shape needs half as many rows as the raw aspect suggests. Takes plain
+// dimensions rather than an Image so a video (which only has VideoInfo's
+// width/height, not a decoded frame, at the point this needs to run) can call
+// it the same way a still image does.
+//
+// --grid-fit only matters when NEITHER --grid-width nor --grid-height was
+// given -- giving either of those already fully determines the other via the
+// aspect math below and has nothing to do with the terminal at all.
+void resolveGridSize(const Options& opts, int srcW, int srcH, int& cols, int& rows)
 {
     cols = opts.grid.width;
     rows = opts.grid.height;
@@ -103,26 +299,117 @@ void resolveGridSize(const Options& opts, const Image& img, int& cols, int& rows
 
     if (cols <= 0 && rows <= 0) {
         int termCols = 0, termRows = 0;
-        if (Terminal::isTty() && Terminal::getSize(termCols, termRows) && termCols > 0)
+        const bool haveTerminal =
+            Terminal::isTty() && Terminal::getSize(termCols, termRows) && termCols > 0 && termRows > 0;
+
+        // -1: every row printed ends in its own newline (see AnsiRenderer::
+        // render), including the last one, so N rows leaves the cursor on
+        // row N+1, not row N -- filling every one of the terminal's own
+        // termRows rows therefore always scrolls it by exactly one line,
+        // regardless of how it's rendered (a still image's single print, or
+        // a video's top-left-homed redraw). One fewer row is what actually
+        // fits without moving the window.
+        const int usableRows = std::max(1, termRows - 1);
+
+        if (!haveTerminal) {
+            cols = 160;
+        } else if (opts.grid.fitAxis == GridFitAxis::Width) {
             cols = termCols;
-        else cols = 160;
+        } else if (opts.grid.fitAxis == GridFitAxis::Height) {
+            rows = usableRows;
+        } else {
+            // Auto: the largest grid that fits inside BOTH terminal dimensions
+            // at once while keeping the source's own shape, the same idea as
+            // an image's "contain" fit -- rather than always sizing to the
+            // terminal's width and letting whatever rows that implies overflow
+            // the window's height, which is exactly what a portrait source at
+            // a wide terminal used to do. Whichever axis the terminal is
+            // relatively SHORTER on than the content needs is the one that
+            // ends up constraining the result; the other is derived from it
+            // by the same aspect math below, same as the Width/Height cases.
+            const double idealAspect = 2.0 * srcW / srcH;   // cols:rows ratio that reproduces the source's shape
+            if ((double)termCols / termRows > idealAspect) rows = usableRows;
+            else cols = termCols;
+        }
     }
 
-    if (cols > 0 && rows <= 0) rows = std::max(1, (int)std::lround((double)cols * img.height / (img.width * 2.0)));
-    else if (rows > 0 && cols <= 0) cols = std::max(1, (int)std::lround((double)rows * img.width * 2.0 / img.height));
+    if (cols > 0 && rows <= 0) rows = std::max(1, (int)std::lround((double)cols * srcH / (srcW * 2.0)));
+    else if (rows > 0 && cols <= 0) cols = std::max(1, (int)std::lround((double)rows * srcW * 2.0 / srcH));
 }
 
 // A path that names an existing directory means "put it in here, called after
-// the input". Saves renaming the output every time you convert a new picture,
-// and png is the default because that is what a directory cannot tell us.
-std::filesystem::path resolveOutputPath(const Options& opts, const std::string& given)
+// the input". Saves renaming the output every time you convert a new picture.
+// `defaultExt` is what a bare directory can't tell us -- png for a still image,
+// mp4 for video; getting this wrong for video isn't cosmetic, it's a real
+// failure (the wrong extension makes FFmpeg guess an image-sequence muxer for
+// what's actually one continuous file, which then refuses every frame after
+// the first).
+//
+// --format overrides defaultExt when given, which is its whole purpose: a way
+// to pick the output kind without spelling out a filename, going through this
+// exact same bare-directory path and therefore the exact same downstream
+// extension checks a hand-written filename would. Accepted with or without a
+// leading dot and in any case ("mp4", ".MP4", "mp4" all resolve the same) --
+// normalised here rather than at the flag, so every caller of this function
+// benefits without having to know --format exists.
+std::filesystem::path resolveOutputPath(
+    const Options& opts, const std::string& given, const char* defaultExt = ".png"
+)
 {
     std::error_code ec;
     if (!std::filesystem::is_directory(given, ec)) return given;
 
+    std::string ext = defaultExt;
+    if (!opts.output.format.empty()) {
+        ext = opts.output.format;
+        if (ext[0] != '.') ext = "." + ext;
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+            return (char)std::tolower(c);
+        });
+    }
+
     const std::string stem = std::filesystem::path(opts.input.path).stem().string();
-    return std::filesystem::path(given) / (stem + ".png");
+    return std::filesystem::path(given) / (stem + ext);
 }
+
+std::string formatBytes(uint64_t bytes)
+{
+    static const char* units[] = {"B", "KB", "MB", "GB"};
+    double v = (double)bytes;
+    int u = 0;
+    while (v >= 1024.0 && u < 3) {
+        v /= 1024.0;
+        u++;
+    }
+
+    std::ostringstream ss;
+    ss << std::fixed;
+    ss.precision(u == 0 ? 0 : (v < 10.0 ? 2 : 1));
+    ss << v << " " << units[u];
+    return ss.str();
+}
+
+std::string formatBitrate(double bitsPerSecond)
+{
+    std::ostringstream ss;
+    ss << std::fixed;
+    if (bitsPerSecond >= 1e6) {
+        ss.precision(1);
+        ss << bitsPerSecond / 1e6 << " Mbps";
+    } else {
+        ss.precision(0);
+        ss << bitsPerSecond / 1e3 << " kbps";
+    }
+    return ss.str();
+}
+
+// Empirical, not a spec constant: every sample file that actually opened in a
+// standards-strict player during testing measured under 35 Mbps; the one that
+// didn't measured over 100. There's no real MPEG-4 Part 2 profile/level that
+// legitimately covers ASCII-render resolutions in the first place (see
+// VideoWriter's own note), so this is a "loud enough to notice" line in that
+// gap, not a guarantee on either side of it.
+constexpr double kBitrateWarningThreshold = 50e6;
 
 bool wantsImage(const Options& opts)
 {
@@ -131,35 +418,6 @@ bool wantsImage(const Options& opts)
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") return true;
     }
     return false;
-}
-
-ImageRenderer::Fit toFit(ImageFit f)
-{
-    switch (f) {
-    case ImageFit::None: return ImageRenderer::Fit::None;
-    case ImageFit::Width: return ImageRenderer::Fit::Width;
-    case ImageFit::Height: return ImageRenderer::Fit::Height;
-    case ImageFit::Cover: return ImageRenderer::Fit::Cover;
-    case ImageFit::Stretch: return ImageRenderer::Fit::Stretch;
-    case ImageFit::Contain: break;
-    }
-    return ImageRenderer::Fit::Contain;
-}
-
-ImageRenderer::Align toAlign(ImageAlign a)
-{
-    switch (a) {
-    case ImageAlign::TopLeft: return ImageRenderer::Align::TopLeft;
-    case ImageAlign::Top: return ImageRenderer::Align::Top;
-    case ImageAlign::TopRight: return ImageRenderer::Align::TopRight;
-    case ImageAlign::Left: return ImageRenderer::Align::Left;
-    case ImageAlign::Right: return ImageRenderer::Align::Right;
-    case ImageAlign::BottomLeft: return ImageRenderer::Align::BottomLeft;
-    case ImageAlign::Bottom: return ImageRenderer::Align::Bottom;
-    case ImageAlign::BottomRight: return ImageRenderer::Align::BottomRight;
-    case ImageAlign::Center: break;
-    }
-    return ImageRenderer::Align::Center;
 }
 
 // How many genuinely different shapes the atlas holds. Counting inked glyphs is
@@ -190,63 +448,946 @@ int distinctGlyphCount(const GlyphAtlas& atlas)
     return (int)shapes.size();
 }
 
-AnsiRenderer::ColorDepth toDepth(ColorMode c)
+// A charset built from a fixed Unicode range (Charset::blocks/braille) has no
+// way to know ahead of time whether the FONT actually has every one of those
+// codepoints -- FT_Load_Char silently substitutes the font's own .notdef
+// glyph for one that's missing rather than failing (see Font::hasGlyph's own
+// note on why that's invisible to the caller otherwise), so an unfiltered
+// charset lets the algorithm select glyphs that render as a placeholder box
+// in the middle of otherwise-correct output -- discovered this exact way:
+// Consolas (first in this project's own default-font search order) is
+// missing some of Charset::blocks()'s quadrant glyphs (U+2596-U+259F), and
+// they showed up as boxed "?" tofu once colour stopped masking them.
+//
+// Left untouched if filtering would remove everything: distinctGlyphCount's
+// own check downstream already covers total failure, and an empty charset
+// would be worse than a fully-unsupported one.
+void filterUnsupportedGlyphs(Charset& charset, const Font& font, const std::string& fontName)
 {
-    switch (c) {
-    case ColorMode::Ansi16: return AnsiRenderer::ColorDepth::Ansi16;
-    case ColorMode::None: return AnsiRenderer::ColorDepth::None;
-    case ColorMode::TrueColor: break;
+    std::u32string kept;
+    std::vector<char32_t> dropped;
+
+    for (uint16_t i = 0; i < charset.size(); i++) {
+        const char32_t cp = charset.codepointAt(i);
+        if (font.hasGlyph(cp)) kept += cp;
+        else dropped.push_back(cp);
     }
-    return AnsiRenderer::ColorDepth::TrueColor;
+
+    if (dropped.empty() || kept.empty()) return;
+
+    std::ostringstream list;
+    for (size_t i = 0; i < dropped.size(); i++) {
+        if (i > 0) list << ' ';
+        list << "U+" << std::hex << std::uppercase << (uint32_t)dropped[i];
+    }
+
+    std::cerr << "asciigen: \"" << fontName << "\" is missing " << dropped.size()
+              << (dropped.size() == 1 ? " glyph" : " glyphs")
+              << " this charset wanted -- skipped so none render as a placeholder box: "
+              << list.str() << "\n";
+
+    charset = Charset(kept);
+}
+
+// The whole video path: a decode thread feeding a FramePool, a FrameWorkerPool
+// running the exact same FrameProcessor::run every still image uses, and a save
+// thread writing finished frames back out in order. Kept as its own function
+// rather than folded into run() below -- the two share the worker-pool
+// machinery (that's the point) but differ enough in how frames arrive and
+// leave (one decoded stream in, one muxed file out, vs. one loaded image and a
+// handful of independent output paths) that forcing them into one function
+// would mostly be a pile of `if (isVideo)` branches, not real sharing.
+int runVideo(const Options& opts)
+{
+    ASCIIGEN_PROFILE("runVideo", "pipeline");
+
+    Terminal::enableAnsi();
+    Terminal::enableUtf8();
+
+    VideoManager::VideoReader reader(opts.input.path);
+    if (!reader.isOpen()) {
+        std::cerr << "asciigen: couldn't open video \"" << opts.input.path << "\"\n";
+        return 3;
+    }
+    const VideoManager::VideoInfo& info = reader.info();
+
+    if (opts.output.paths.empty()) {
+        std::cerr << "asciigen: video input needs an --out path\n";
+        return 4;
+    }
+    const std::filesystem::path outPath = resolveOutputPath(opts, opts.output.paths[0], ".mp4");
+
+    // Mandatory, not deferred like the general input/output compatibility check
+    // (video-roadmap.md item 11) -- an image extension here doesn't "might not
+    // work", it makes FFmpeg pick a single-image muxer for what's actually one
+    // continuous stream of frames, which then rejects every frame after the
+    // first. Worth failing on up front rather than mid-encode. .txt/.ans are
+    // accepted too -- see runTextVideo below -- as a genuinely different kind
+    // of "video" output, not a pixel container.
+    const std::string outExt = lowerExtension(outPath);
+    static const std::set<std::string> kVideoExtensions {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"};
+    static const std::set<std::string> kTextVideoExtensions {".txt", ".ans"};
+    const bool isTextOutput = kTextVideoExtensions.count(outExt) > 0;
+    if (!isTextOutput && !kVideoExtensions.count(outExt)) {
+        std::cerr << "asciigen: \"" << outExt << "\" isn't a video container asciigen can write to -- "
+                  << "video input needs a video --out (.mp4, .mkv, .mov, .avi, .webm, .m4v, .txt, .ans)\n";
+        return 4;
+    }
+
+    if (!opts.output.overwrite && std::filesystem::exists(outPath)) {
+        std::cerr << "asciigen: " << outPath << " exists (use --overwrite)\n";
+        return 6;
+    }
+
+    int cols = 0, rows = 0;
+    resolveGridSize(opts, info.width, info.height, cols, rows);
+
+    Charset charset = buildCharset(opts);
+
+    Dithering::options = {
+        .enabled = opts.dither.name != DitherName::None,
+        .algorithm = Dithering::Algorithm::Bayer4,
+        .levels = opts.dither.levels,
+        .adaptive = opts.dither.adaptive,
+        .flatContrast = opts.dither.flatContrast,
+        .edgeContrast = opts.dither.edgeContrast
+    };
+
+    Edges::options = {
+        .enabled = opts.edge.name != EdgeName::None,
+        .algorithm = Edges::Algorithm::Scharr,
+        .subsamples = opts.edge.subsamples,
+        .threshold = opts.edge.threshold,
+        .coherence = opts.edge.coherence,
+        .hysteresis = opts.edge.hysteresis,
+        .nms = opts.edge.nms,
+        .colorSet = opts.edge.colorSet,
+        .color = opts.edge.color,
+        .brightness = opts.edge.brightness
+    };
+
+    Edges::alphaOptions = {
+        .enabled = opts.edge.alphaOutline,
+        .threshold = opts.edge.alphaThreshold,
+        .coherence = opts.edge.alphaCoherence,
+        .colorSet = opts.edge.alphaColorSet,
+        .color = opts.edge.alphaColor,
+        .brightness = opts.edge.alphaBrightness
+    };
+
+    const std::filesystem::path fontPath = resolveFont(opts);
+    if (!std::filesystem::exists(fontPath)) {
+        std::cerr << "asciigen: font not found: " << fontPath.string() << "\n";
+        return 7;
+    }
+
+    auto fontHolder = std::make_unique<Font>(fontPath);
+    Font& font = *fontHolder;
+
+    filterUnsupportedGlyphs(charset, font, fontPath.filename().string());
+
+    const int matchH = std::max(2, opts.font.matchSize);
+    GlyphAtlas matchAtlas(font, charset, std::max(1, matchH / 2), matchH);
+
+    if (distinctGlyphCount(matchAtlas) < 2) {
+        std::cerr << "asciigen: \"" << fontPath.filename().string()
+                  << "\" has no glyphs for this charset, so the output will be blank.\n"
+                  << "  pick a font that covers it, e.g.\n"
+                  << "  --font-path C:/Windows/Fonts/CascadiaMono.ttf\n";
+    }
+
+    const int planeW = opts.algo.name == AlgoName::Ramp ? cols : cols * std::max(1, matchH / 2);
+    const int planeH = opts.algo.name == AlgoName::Ramp ? rows : rows * matchH;
+
+    Resample::Filter resampleFilter = Resample::Filter::Auto;
+    if (opts.algo.resampleFilter == ResampleFilterName::Box) resampleFilter = Resample::Filter::Box;
+    else if (opts.algo.resampleFilter == ResampleFilterName::Triangle)
+        resampleFilter = Resample::Filter::Triangle;
+
+    // Only built for a pixel output -- a text/ANSI one has no use for a
+    // rendered glyph atlas at all (see FrameProcessor::run's own note: a null
+    // renderAtlas skips that whole step), so skipping the construction here
+    // saves rasterising every glyph in the charset for nothing.
+    std::unique_ptr<GlyphAtlas> renderAtlas;
+    if (!isTextOutput) {
+        int renderH = opts.font.renderSize > 0 ? opts.font.renderSize : 32;
+        renderH = std::max(2, renderH);
+        renderAtlas = std::make_unique<GlyphAtlas>(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
+    }
+
+    FrameProcessor::Context ctx {
+        .font = &font,
+        .charset = &charset,
+        .matchAtlas = &matchAtlas,
+        .renderAtlas = renderAtlas.get(),
+        .resampleFilter = resampleFilter,
+        .planeW = planeW,
+        .planeH = planeH,
+    };
+
+    if (opts.algo.name == AlgoName::Structure) {
+        Structure::buildGlyphModel(
+            matchAtlas,
+            {.orientBlocksX = opts.algo.structureOrientBlocksX,
+             .orientBlocksY = opts.algo.structureOrientBlocksY,
+             .bins = opts.algo.structureBins,
+             .massBlocksX = opts.algo.structureMassBlocksX,
+             .massBlocksY = opts.algo.structureMassBlocksY},
+            ctx.structureModel
+        );
+    } else if (opts.algo.name == AlgoName::Bitmask) {
+        Bitmask::buildModel(
+            matchAtlas,
+            {.allowBackground = opts.algo.allowBackground,
+             .softness = opts.algo.bitmaskSoftness,
+             .blurRadius = opts.algo.bitmaskBlurRadius},
+            ctx.bitmaskModel
+        );
+    }
+
+    // Not final values -- see video-roadmap.md item 8. Slack beyond workerCount
+    // is what keeps a worker from ever waiting on the decoder for a free slot in
+    // the common case (decode is cheap next to a frame's own select/render cost).
+    //
+    // One core deliberately left unclaimed (when there's more than one to
+    // begin with): workerCount here plus the decoder, saver and closer
+    // threads already oversubscribes every core by a few threads, and this
+    // project's own progress display -- running on the thread that's
+    // otherwise just waiting -- was measured going visibly choppy under that
+    // load (updates arriving every several hundred ms instead of the ~80ms it
+    // asks for) specifically for a text/ANSI output, where every worker's
+    // extra AnsiRenderer::render() call adds real CPU time on top of the
+    // usual per-frame work. Giving the display's own thread a fighting chance
+    // at getting scheduled promptly is worth marginally more contention
+    // between the workers themselves.
+    const unsigned hw = std::thread::hardware_concurrency();
+    const int workerCount = std::max(1, (int)(hw > 1 ? hw - 1 : hw ? hw : 4));
+    const int slotCount = workerCount + 3;
+
+    FramePool pool;
+    pool.allocate(slotCount, cols, rows, planeW, planeH);
+
+    const double sourceFps = info.fps > 0.0 ? info.fps : 24.0;
+
+    // --fps only ever drops frames to reach a lower rate -- see VideoOptions'
+    // own note on why duplicating frames to fake a higher one isn't supported.
+    const double outputFps =
+        (opts.video.fps > 0.0 && opts.video.fps < sourceFps) ? opts.video.fps : sourceFps;
+
+    // --start-/--end-frame take precedence over their --start-/--end-time
+    // equivalents when both are somehow given; converted to seconds here so
+    // the decode loop below only ever has to reason about one timeline.
+    double startT = 0.0;
+    if (opts.video.startFrame >= 0) startT = opts.video.startFrame / sourceFps;
+    else if (opts.video.startTime >= 0.0) startT = opts.video.startTime;
+
+    double endT = std::numeric_limits<double>::infinity();
+    if (opts.video.endFrame >= 0) endT = (opts.video.endFrame + 1) / sourceFps;
+    else if (opts.video.endTime >= 0.0) endT = opts.video.endTime;
+
+    if (endT <= startT) {
+        std::cerr << "asciigen: --end-time/--end-frame is before --start-time/--start-frame\n";
+        return 4;
+    }
+
+    // Re-estimated from the actual output window and rate rather than the raw
+    // container frame count, which doesn't mean much once trimming and/or
+    // --fps are in play. Used for the progress bar's total below, and (for a
+    // text/ANSI output) written into the header up front, before the real
+    // count is known -- playback (see playTextVideo) counts actual frame
+    // separators rather than trusting that number, so an estimate that turns
+    // out wrong costs nothing worse than a slightly-off progress percentage.
+    int64_t estimatedTotalFrames = info.frameCount;
+    if (info.durationSeconds > 0.0) {
+        const double windowEnd = std::min(endT, info.durationSeconds);
+        if (windowEnd > startT) estimatedTotalFrames = (int64_t)((windowEnd - startT) * outputFps + 0.5);
+    }
+
+    // Written here, renamed to outPath only once everything below finishes
+    // successfully -- see the rename near the end of this function for why:
+    // this is what lets a whole class of "something else has outPath open"
+    // failure sidestep itself, whatever that something else actually is,
+    // since nothing ever opens outPath itself for writing until the video is
+    // already done.
+    std::filesystem::path tempPath = outPath;
+    tempPath += ".part";
+
+    int outW = 0, outH = 0;
+    std::optional<VideoManager::VideoWriter> pixelWriter;
+    std::ofstream textOut;
+
+    if (isTextOutput) {
+        textOut.open(tempPath, std::ios::binary);
+        if (!textOut) {
+            std::cerr << "asciigen: couldn't open " << tempPath << " for writing\n";
+            std::error_code cleanupEc;
+            std::filesystem::remove(tempPath, cleanupEc);
+            return 6;
+        }
+
+        textOut << kTextVideoMagic << " fps=" << outputFps << " frames=" << estimatedTotalFrames
+                << " duration=" << (outputFps > 0.0 ? estimatedTotalFrames / outputFps : 0.0) << "\n";
+    } else {
+        outW = renderAtlas->cellWidth() * cols;
+        outH = renderAtlas->cellHeight() * rows;
+
+        pixelWriter.emplace(tempPath, outW, outH, outputFps);
+        if (!pixelWriter->isOpen()) {
+            std::cerr << "asciigen: couldn't open " << tempPath << " for writing\n";
+            std::error_code cleanupEc;
+            std::filesystem::remove(tempPath, cleanupEc);
+            return 6;
+        }
+    }
+
+    // Bounded ordered handoff between however many workers finish rendering (out
+    // of order) and the one thread that writes frames out in sequence -- see
+    // SaveQueue's own note on why capacity exists and why the next-in-line
+    // frame is the one exception to it. Capacity matches workerCount: that's
+    // "one wave" of concurrently-finishing workers' worth of backlog, which is
+    // as much slack as there's ever a reason to want -- a bigger number just
+    // lets the write side fall further behind before anything feels it.
+    //
+    // Both declared unconditionally (one stays empty and unused) rather than
+    // picked with a pointer -- SaveQueue<Image> and SaveQueue<std::string> are
+    // different types, and everything below that needs to outlive this
+    // function's if/else branches (the manager's callback, the saver and
+    // closer threads) would otherwise be referencing a queue that already
+    // went out of scope by the time it runs.
+    SaveQueue<Image> pixelSaveQueue(workerCount);
+    SaveQueue<std::string> textSaveQueue(workerCount);
+
+    std::atomic<bool> saverFinished {false};
+    std::atomic<int> framesWritten {0};
+
+    // Each worker pushes its own rendered frame here as soon as it has one --
+    // may block if the relevant queue is full (see SaveQueue), which only
+    // holds up that one worker, never the decoder or any other worker; the
+    // slot it was using is already freed by the time this runs (see
+    // FrameWorkerPool).
+    std::optional<FrameWorkerPool::Manager> manager;
+    if (isTextOutput) {
+        AnsiRenderer::ColorDepth depth = AnsiRenderer::ColorDepth::None;
+        if (outExt == ".ans") {
+            switch (opts.output.color) {
+            case ColorMode::Ansi16: depth = AnsiRenderer::ColorDepth::Ansi16; break;
+            case ColorMode::TrueColor: depth = AnsiRenderer::ColorDepth::TrueColor; break;
+            case ColorMode::None: break;
+            }
+        }
+
+        manager.emplace(
+            pool, opts, ctx, workerCount,
+            [&](int frameIndex, Image&&, std::string&& text) {
+                textSaveQueue.push(frameIndex, std::move(text));
+            },
+            AnsiRenderer::AnsiRenderOptions {
+                .depth = depth,
+                .transparentBackground = opts.backdrop.mode == BackdropMode::Transparent,
+                // Only for .ans -- a .txt frame has to stay pure text with no
+                // escape bytes in it at all, same reason its depth is forced
+                // to None just above. playTextVideo doesn't depend on this
+                // either way: it repositions the cursor itself by counting
+                // each frame's own lines, so a .txt file plays back correctly
+                // with no embedded control codes of its own; this is purely
+                // an extra for a .ans file opened some other way than through
+                // this project's own player.
+                .screenControls = outExt == ".ans"
+            }
+        );
+    } else {
+        manager.emplace(pool, opts, ctx, workerCount, [&](int frameIndex, Image&& img, std::string&&) {
+            pixelSaveQueue.push(frameIndex, std::move(img));
+        });
+    }
+
+    // The only thread ever allowed to call reader.nextFrame() -- decode is
+    // inherently sequential internal state, see VideoManager.hpp. Also where
+    // --start-/--end-time(-frame) and --fps downsampling happen: there's no
+    // seeking (same note), so reaching startT or skipping a frame the target
+    // rate doesn't need still costs decoding it -- just into `scratch`
+    // instead of a pool slot, so a frame nobody will submit never occupies
+    // one. nextOutputTime is recomputed from outFrameIndex each pass rather
+    // than accumulated by repeated += so float drift can't creep in over a
+    // long clip and eventually cost or duplicate a frame at the boundary.
+    // Entirely independent of what kind of output this run is producing --
+    // it only ever feeds decoded pixels into pool slots for
+    // FrameProcessor::run -- so unlike everything above it, it isn't inside
+    // either branch.
+    std::thread decoderThread([&] {
+        Profiler::nameThread("decoder");
+
+        int outFrameIndex = 0;
+        int64_t srcFrameIndex = 0;
+        Image scratch;
+
+        for (;;) {
+            const double nextOutputTime = startT + outFrameIndex / outputFps;
+            if (nextOutputTime >= endT) break;
+
+            const double srcTime = (double)srcFrameIndex / sourceFps;
+            const double srcFrameEnd = (double)(srcFrameIndex + 1) / sourceFps;
+            srcFrameIndex++;
+            if (srcTime >= endT) break;
+
+            if (srcFrameEnd <= nextOutputTime) {
+                if (!reader.nextFrame(scratch)) break;   // end of stream
+                continue;
+            }
+
+            const int idx = pool.waitForFreeSlot();
+            if (idx < 0) break;   // pool closed before we ever got here -- shouldn't happen
+
+            if (!reader.nextFrame(pool.slot(idx).storage.input)) break;   // end of stream
+
+            pool.submit(idx, outFrameIndex);
+            outFrameIndex++;
+        }
+        pool.closeQueue();
+    });
+
+    std::thread saverThread;
+    if (isTextOutput) {
+        saverThread = std::thread([&] {
+            Profiler::nameThread("saver");
+
+            std::string text;
+            while (textSaveQueue.popNextInOrder(text)) {
+                textOut << text << kFrameSeparator;
+                framesWritten.fetch_add(1, std::memory_order_relaxed);
+            }
+            textOut.close();
+            saverFinished.store(true, std::memory_order_release);
+        });
+    } else {
+        saverThread = std::thread([&] {
+            Profiler::nameThread("saver");
+
+            Image img;
+            while (pixelSaveQueue.popNextInOrder(img)) {
+                pixelWriter->writeFrame(img);
+                framesWritten.fetch_add(1, std::memory_order_relaxed);
+            }
+            pixelWriter->finish();
+            saverFinished.store(true, std::memory_order_release);
+        });
+    }
+
+    // The relevant queue's close() can only run once every push() that will
+    // ever happen already has -- i.e. after every worker has exited, which is
+    // after the decoder has stopped submitting. Doing that wait on a fourth
+    // thread (not the main one) is what lets the main thread block in
+    // runUntilDone below without deadlocking against this: it can't wait for
+    // the saver to finish AND be the thing responsible for telling the saver
+    // nothing more is coming.
+    std::thread closerThread([&] {
+        decoderThread.join();
+        manager->join();
+        if (isTextOutput) textSaveQueue.close();
+        else pixelSaveQueue.close();
+    });
+
+    std::vector<ProgressDisplay::Line> lines;
+
+    lines.push_back(ProgressDisplay::Line {[&] {
+        const int64_t total = estimatedTotalFrames;
+        const int done = framesWritten.load(std::memory_order_relaxed);
+        std::string label =
+            "overall (" + std::to_string(done) + "/" + (total > 0 ? std::to_string(total) : "?") + ")";
+        const float fraction = total > 0 ? std::clamp((float)done / (float)total, 0.f, 1.f) : 0.f;
+        return ProgressDisplay::Snapshot {std::move(label), "frames", fraction};
+    }});
+
+    for (int i = 0; i < workerCount; i++) {
+        lines.push_back(ProgressDisplay::Line {[&manager, &pool, i] {
+            const int s = manager->currentSlot(i);
+            if (s < 0) {
+                // Distinguishes the two ways a worker can be idle: nothing decoded
+                // yet to give it, vs. it's holding a finished frame the saver
+                // hasn't made room for -- both used to collapse into plain "idle".
+                const char* stage = manager->workerState(i) == FrameWorkerPool::WorkerState::HandingOff
+                    ? "saving" : "decode";
+                return ProgressDisplay::Snapshot {"thread " + std::to_string(i + 1), stage, 0.f};
+            }
+
+            FrameSlot& slot = pool.slot(s);
+            FrameProgress& p = slot.storage.progress;
+            return ProgressDisplay::Snapshot {
+                "thread " + std::to_string(i + 1) + " (frame " + std::to_string(slot.frameIndex) + ")",
+                p.stage.load(std::memory_order_relaxed), p.fraction.load(std::memory_order_relaxed)
+            };
+        }});
+    }
+
+    ProgressDisplay::runUntilDone(
+        [&] { return saverFinished.load(std::memory_order_acquire); }, lines
+    );
+
+    // Both should already be finished, or nearly so -- saverFinished only ever
+    // becomes true after the relevant queue closes, which closerThread only
+    // does once decoderThread and every worker are already done. These joins
+    // are just making that explicit rather than relying on it.
+    closerThread.join();
+    saverThread.join();
+
+    // Explicitly closed here, not left to fall out of scope at the end of
+    // this function -- finish() (called inside saverThread above) flushes
+    // the encoder and writes the trailer, but the underlying file handle
+    // itself is only released by VideoWriter's destructor. Renaming tempPath
+    // while THIS PROCESS still had it open failed every single time in
+    // testing ("used by another process" -- our own), not just occasionally,
+    // which is what gave away that this was never a flaky external lock to
+    // retry around in the first place.
+    pixelWriter.reset();
+    if (textOut.is_open()) textOut.close();
+
+    // Only ever renamed INTO outPath, never opened there directly -- see
+    // tempPath's own note on why. A short retry stays worth keeping on top
+    // of the real fix above: something else entirely (a real external
+    // lock -- antivirus, a wallpaper tool with the old file open) can still
+    // transiently hold outPath itself for a moment.
+    std::error_code renameEc;
+    for (int attempt = 0; attempt < 10; attempt++) {
+        std::filesystem::rename(tempPath, outPath, renameEc);
+        if (!renameEc) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (renameEc) {
+        std::cerr << "asciigen: finished, but couldn't rename " << tempPath << " to " << outPath
+                  << " (" << renameEc.message() << ") -- the result is at " << tempPath << "\n";
+        return 6;
+    }
+
+    // Real numbers off the finished file, not either writer's own nominal
+    // target -- see VideoWriter's own note on why those two can differ a lot
+    // for a pixel output. durationSeconds comes from frames actually written
+    // over outputFps rather than the source's duration, since trimming/--fps
+    // can make them different on purpose.
+    std::error_code sizeEc;
+    const uint64_t fileBytes = std::filesystem::file_size(outPath, sizeEc);
+    const int writtenFrames = framesWritten.load(std::memory_order_relaxed);
+    const double durationSeconds = outputFps > 0.0 ? writtenFrames / outputFps : 0.0;
+
+    std::cout << "asciigen: wrote " << outPath;
+    if (!sizeEc) std::cout << " (" << formatBytes(fileBytes) << ")";
+
+    if (isTextOutput) {
+        std::cout << " -- " << cols << "x" << rows << " cells, " << outputFps << "fps, " << writtenFrames
+                  << " frames, " << durationSeconds << "s\n";
+        return 0;
+    }
+
+    const double bitrate =
+        (!sizeEc && durationSeconds > 0.0) ? (double)fileBytes * 8.0 / durationSeconds : 0.0;
+    std::cout << " -- " << outW << "x" << outH << ", " << outputFps << "fps, " << writtenFrames
+              << " frames, " << durationSeconds << "s";
+    if (bitrate > 0.0) std::cout << ", " << formatBitrate(bitrate);
+    std::cout << "\n";
+
+    if (outExt != ".mkv" && bitrate > kBitrateWarningThreshold) {
+        std::cerr << "asciigen: warning: " << outPath << " encoded at roughly "
+                  << formatBitrate(bitrate) << " -- MPEG-4 (the only codec this LGPL build can "
+                  << "write, see VideoManager.hpp) doesn't really have a legal profile/level for "
+                  << "bitrates this high, and some players' decoders will refuse to open it. If it "
+                  << "won't open: try a lower --fps, a smaller --grid-width/--image-width, or "
+                  << "trimming with --start-time/--end-time.\n";
+    }
+
+    return 0;
+}
+
+// Renders a saved text/ANSI file (a still's, or a video's -- see the header
+// magic) back out as real media: an image or a video, whichever --out/
+// --format asks for. Reverses AnsiRenderer::render (see AnsiParser.hpp) to
+// recover a CellBuffer per frame, then hands each one to the EXACT SAME
+// ImageRenderer/VideoManager calls a live render uses -- no selection
+// algorithm runs here at all, since the glyph/colour choices already exist
+// in the saved file; this only ever turns them into pixels. No worker pool
+// either: unlike a real video, there's no per-frame algorithm cost here to
+// parallelise, just parsing text and rendering it, so one thread does the
+// whole thing sequentially while the main thread shows progress -- the same
+// split the still-image path already uses, just looped.
+int renderTextToMedia(const Options& opts)
+{
+    ASCIIGEN_PROFILE("renderTextToMedia", "pipeline");
+
+    // Missed on the first pass of this function -- every other path that can
+    // reach ProgressDisplay (run(), runVideo()) does this before the first
+    // redraw, which is what keeps Terminal::supportsUnicodeBlocks()'s answer
+    // actually true: without enableUtf8() first, the console is still
+    // decoding stdout under its default (non-UTF-8) codepage while the bar's
+    // own block-character bytes go out, which garbles them regardless of
+    // whether the terminal itself can display them fine.
+    Terminal::enableAnsi();
+    Terminal::enableUtf8();
+
+    std::ifstream file(opts.input.path, std::ios::binary);
+    if (!file) {
+        std::cerr << "asciigen: cannot read \"" << opts.input.path << "\"\n";
+        return 3;
+    }
+
+    std::string headerLine;
+    std::getline(file, headerLine);
+    const bool isVideo = headerLine.rfind(kTextVideoMagic, 0) == 0;
+
+    double sourceFps = 24.0;
+    int64_t estimatedTotalFrames = 1;
+    if (isVideo) {
+        parseHeaderField(headerLine, "fps", sourceFps);
+        if (sourceFps <= 0.0) sourceFps = 24.0;
+        double framesField = 0.0;
+        if (parseHeaderField(headerLine, "frames", framesField) && framesField > 0.0)
+            estimatedTotalFrames = (int64_t)framesField;
+    }
+
+    const std::filesystem::path outPath =
+        resolveOutputPath(opts, opts.output.paths[0], isVideo ? ".mp4" : ".png");
+    const std::string outExt = lowerExtension(outPath);
+
+    static const std::set<std::string> kVideoExts {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"};
+    static const std::set<std::string> kImageExts {".png", ".jpg", ".jpeg"};
+
+    if (isVideo && !kVideoExts.count(outExt)) {
+        std::cerr << "asciigen: \"" << opts.input.path << "\" is a saved VIDEO -- --out/--format needs "
+                  << "a video container (.mp4, .mkv, .mov, .avi, .webm, .m4v), not \"" << outExt
+                  << "\"\n";
+        return 4;
+    }
+    if (!isVideo && !kImageExts.count(outExt)) {
+        std::cerr << "asciigen: \"" << opts.input.path << "\" is a saved still -- --out/--format needs "
+                  << "an image format (.png, .jpg, .jpeg), not \"" << outExt << "\"\n";
+        return 4;
+    }
+
+    if (!opts.output.overwrite && std::filesystem::exists(outPath)) {
+        std::cerr << "asciigen: " << outPath << " exists (use --overwrite)\n";
+        return 6;
+    }
+
+    // Font resolved and loaded up front -- everything from here on runs as
+    // one real streaming pass, video included. There used to be a whole
+    // separate pass over the file first (AnsiParser::collectGlyphs, over
+    // every frame) just to learn every glyph the file would ever use before
+    // building one GlyphAtlas and filtering out whatever the font couldn't
+    // cover. That pass had no progress feedback at all, so for any file of
+    // real size it showed up as a long, silent delay before the progress bar
+    // even appeared -- exactly the "loading the whole ansi file upfront"
+    // symptom, because that's really what it was doing, just chunked rather
+    // than read into one string. Filtering per-codepoint instead (see
+    // AnsiParser::parse's `isSupported`) means an unsupported glyph is
+    // substituted the instant it's first seen, with no separate pass and no
+    // charset reindexing ever needed, so frame 1 can be parsed, rendered and
+    // handed to the writer as soon as it's read.
+    const std::filesystem::path fontPath = resolveFont(opts);
+    if (!std::filesystem::exists(fontPath)) {
+        std::cerr << "asciigen: font not found: " << fontPath.string() << "\n";
+        return 7;
+    }
+    Font font(fontPath);
+
+    std::set<char32_t> droppedCodepoints;
+    const auto isGlyphSupported = [&](char32_t cp) { return font.hasGlyph(cp); };
+
+    auto warnDropped = [&] {
+        if (droppedCodepoints.empty()) return;
+        std::ostringstream list;
+        bool firstItem = true;
+        for (char32_t cp : droppedCodepoints) {
+            if (!firstItem) list << ' ';
+            list << "U+" << std::hex << std::uppercase << (uint32_t)cp;
+            firstItem = false;
+        }
+        std::cerr << "asciigen: \"" << fontPath.filename().string() << "\" is missing "
+                  << droppedCodepoints.size() << (droppedCodepoints.size() == 1 ? " glyph" : " glyphs")
+                  << " this file used -- rendered as a space instead: " << list.str() << "\n";
+    };
+
+    ImageManager::setPngCompression(opts.output.pngCompression);
+
+    // Only ever fills the CANVAS margin/letterbox area --image-aspect or
+    // --image-margin can add, never a cell's own background: that's already
+    // whatever colour the saved file said it was, parsed straight through.
+    // Recomputed per frame for Auto, same as a live render does (see
+    // FrameProcessor::run) -- it reads the frame's own colours, which is a
+    // per-frame thing regardless of where those colours came from.
+    auto canvasBackdrop = [&](const CellBuffer& buffer) -> RGB {
+        if (opts.backdrop.mode == BackdropMode::Auto)
+            return buffer.suggestedBackground(opts.backdrop.darken, opts.backdrop.lumaThreshold);
+        if (opts.backdrop.mode == BackdropMode::Fixed) return opts.backdrop.color;
+        return RGB {0, 0, 0};
+    };
+
+    ImageRenderer::ImageRenderOptions renderOpts {
+        .width = opts.output.imageWidth,
+        .height = opts.output.imageHeight,
+        .fit = FrameProcessor::toFit(opts.output.fit),
+        .align = FrameProcessor::toAlign(opts.output.align),
+        .margin = opts.output.imageMargin,
+        .scale = opts.output.imageScale,
+        .aspect = opts.output.imageAspect,
+    };
+
+    if (!isVideo) {
+        std::string stillFrameText;
+        stillFrameText.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+
+        Charset charset;
+        CellBuffer buffer;
+        AnsiParser::parse(stillFrameText, charset, buffer, isGlyphSupported, &droppedCodepoints);
+        warnDropped();
+
+        int renderH = opts.font.renderSize;
+        if (renderH <= 0)
+            renderH = opts.output.imageHeight > 0
+                          ? ImageRenderer::suggestedGlyphHeight(std::max(1, buffer.height()), opts.output.imageHeight)
+                          : 32;
+        renderH = std::max(2, renderH);
+        GlyphAtlas renderAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
+
+        renderOpts.backgroundColor = canvasBackdrop(buffer);
+        Image rendered;
+        ImageRenderer::renderToSize(buffer, renderAtlas, renderOpts, rendered);
+
+        const bool ok = ImageManager::saveImage(outPath, rendered);
+        if (!ok) {
+            std::cerr << "asciigen: failed writing " << outPath << "\n";
+            return 6;
+        }
+
+        std::error_code sizeEc;
+        const uint64_t fileBytes = std::filesystem::file_size(outPath, sizeEc);
+        std::cout << "asciigen: wrote " << outPath;
+        if (!sizeEc) std::cout << " (" << formatBytes(fileBytes) << ")";
+        std::cout << " -- " << rendered.width << "x" << rendered.height << "\n";
+        return 0;
+    }
+
+    // Video: `file` is still sitting right after the header line, so this
+    // just keeps reading it -- no need to reopen or rewind anything, since
+    // there's no earlier pass that already ran it dry.
+    TextFrameReader reader(file);
+
+    // Written here, renamed to outPath only once rendering finishes -- same
+    // reason and same pattern as runVideo's own tempPath (see its note):
+    // nothing ever opens outPath itself for writing until the video is
+    // already done, and the writer is explicitly closed (not left to fall
+    // out of scope) before the rename, since finish() alone doesn't release
+    // the file handle -- see runVideo's own note on why that distinction
+    // mattered here.
+    std::filesystem::path tempPath = outPath;
+    tempPath += ".part";
+
+    std::atomic<int> framesWritten {0};
+    std::atomic<bool> renderDone {false};
+    std::optional<VideoManager::VideoWriter> writer;
+    int outW = 0, outH = 0;
+    bool writeFailed = false;
+
+    // Parsing/rendering one frame and encoding the PREVIOUS one used to run
+    // fully sequentially on one thread -- reading frame N+1 never started
+    // until frame N's writeFrame() call had already returned, so encoding
+    // (especially FFV1's, meaningfully slower per frame than MPEG-4's own,
+    // see VideoManager.hpp) sat on the critical path with nothing overlapping
+    // it. Split into a producer (read/parse/render) and a consumer (encode/
+    // write) connected by the same bounded SaveQueue runVideo's own real
+    // video pipeline uses, for the same reason: while the consumer is inside
+    // a slow writeFrame(), the producer can already be preparing the next
+    // frame instead of waiting on it. Capacity is small on purpose -- there's
+    // exactly one producer here, not a worker pool racing ahead of a single
+    // saver, so there's nothing to gain from a deep backlog, just memory
+    // spent holding rendered frames the consumer hasn't gotten to yet.
+    SaveQueue<Image> saveQueue(4);
+
+    std::thread producer([&] {
+        std::string frameText;
+        CellBuffer buffer;
+        Charset charset;
+        GlyphAtlas renderAtlas;
+        int renderH = 0;
+        int frameIndex = 0;
+
+        while (reader.next(frameText)) {
+            const uint16_t sizeBefore = charset.size();
+            AnsiParser::parse(frameText, charset, buffer, isGlyphSupported, &droppedCodepoints);
+
+            if (frameIndex == 0) {
+                renderH = opts.font.renderSize;
+                if (renderH <= 0)
+                    renderH = opts.output.imageHeight > 0
+                                  ? ImageRenderer::suggestedGlyphHeight(
+                                        std::max(1, buffer.height()), opts.output.imageHeight
+                                    )
+                                  : 32;
+                renderH = std::max(2, renderH);
+            }
+
+            // Rebuilt whenever a frame's parse actually grew the charset --
+            // for most files that's just once, right after frame 1: whatever
+            // small vocabulary a charset preset or algorithm settled into
+            // gets reused frame after frame from there on, so a rebuild past
+            // the first frame is the exception, not something every frame
+            // pays for. `|| frameIndex == 0` covers the pathological case of
+            // a first frame that adds nothing at all (e.g. every cell a
+            // space already in an empty charset -- still grows it from 0,
+            // but this is here so the atlas is never left default-built
+            // regardless).
+            if (charset.size() != sizeBefore || frameIndex == 0)
+                renderAtlas = GlyphAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
+
+            renderOpts.backgroundColor = canvasBackdrop(buffer);
+            Image rendered;
+            ImageRenderer::renderToSize(buffer, renderAtlas, renderOpts, rendered);
+
+            saveQueue.push(frameIndex++, std::move(rendered));
+        }
+
+        saveQueue.close();
+    });
+
+    std::thread consumer([&] {
+        Image img;
+        bool first = true;
+
+        // writeFrame()'s own return value isn't checked below -- matching
+        // runVideo's real video pipeline, which doesn't either (see its
+        // saverThread). Keeping the queue draining regardless is what
+        // matters here: if this stopped early instead, the producer could
+        // block forever inside push() once the queue filled up with nothing
+        // left popping it.
+        while (saveQueue.popNextInOrder(img)) {
+            if (first) {
+                outW = img.width;
+                outH = img.height;
+                writer.emplace(tempPath, outW, outH, sourceFps);
+                if (!writer->isOpen()) {
+                    writeFailed = true;
+                    writer.reset();
+                }
+                first = false;
+            }
+
+            if (writer) writer->writeFrame(img);
+            framesWritten.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (writer) writer->finish();
+        renderDone.store(true, std::memory_order_release);
+    });
+
+    std::vector<ProgressDisplay::Line> lines;
+    lines.push_back(ProgressDisplay::Line {[&] {
+        const int done = framesWritten.load(std::memory_order_relaxed);
+        const int64_t total = estimatedTotalFrames;
+        std::string label =
+            "render (" + std::to_string(done) + "/" + (total > 0 ? std::to_string(total) : "?") + ")";
+        const float fraction = total > 0 ? std::clamp((float)done / (float)total, 0.f, 1.f) : 0.f;
+        return ProgressDisplay::Snapshot {std::move(label), "frame", fraction};
+    }});
+    ProgressDisplay::runUntilDone([&] { return renderDone.load(std::memory_order_acquire); }, lines);
+
+    producer.join();
+    consumer.join();
+    warnDropped();
+
+    if (writeFailed || !writer) {
+        std::cerr << "asciigen: couldn't open " << tempPath << " for writing\n";
+        std::error_code cleanupEc;
+        std::filesystem::remove(tempPath, cleanupEc);
+        return 6;
+    }
+    writer.reset();
+
+    std::error_code renameEc;
+    for (int attempt = 0; attempt < 10; attempt++) {
+        std::filesystem::rename(tempPath, outPath, renameEc);
+        if (!renameEc) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (renameEc) {
+        std::cerr << "asciigen: finished, but couldn't rename " << tempPath << " to " << outPath
+                  << " (" << renameEc.message() << ") -- the result is at " << tempPath << "\n";
+        return 6;
+    }
+
+    std::error_code sizeEc;
+    const uint64_t fileBytes = std::filesystem::file_size(outPath, sizeEc);
+    const int written = framesWritten.load(std::memory_order_relaxed);
+    const double durationSeconds = sourceFps > 0.0 ? written / sourceFps : 0.0;
+    const double bitrate =
+        (!sizeEc && durationSeconds > 0.0) ? (double)fileBytes * 8.0 / durationSeconds : 0.0;
+
+    std::cout << "asciigen: wrote " << outPath;
+    if (!sizeEc) std::cout << " (" << formatBytes(fileBytes) << ")";
+    std::cout << " -- " << outW << "x" << outH << ", " << sourceFps << "fps, " << written << " frames, "
+              << durationSeconds << "s";
+    if (bitrate > 0.0) std::cout << ", " << formatBitrate(bitrate);
+    std::cout << "\n";
+
+    if (outExt != ".mkv" && bitrate > kBitrateWarningThreshold) {
+        std::cerr << "asciigen: warning: " << outPath << " encoded at roughly " << formatBitrate(bitrate)
+                  << " -- MPEG-4 (the only codec this LGPL build can write, see VideoManager.hpp) "
+                  << "doesn't really have a legal profile/level for bitrates this high, and some "
+                  << "players' decoders will refuse to open it.\n";
+    }
+
+    return 0;
 }
 
 }   // namespace
 
 int run(const Options& opts)
 {
-    if (opts.input.passthrough) return passthrough(opts);
+    // A .txt/.ans input with no --out just gets echoed/played (passthrough
+    // above) -- the same input WITH one asks to be rendered back out as real
+    // media instead, still or video depending on what the file turns out to
+    // be (checked inside renderTextToMedia against whatever format --out/
+    // --format asked for, exiting if they don't match). --format alone
+    // (a bare directory, no explicit --out path) still counts as asking.
+    if (opts.input.passthrough) {
+        if (!opts.output.paths.empty()) return renderTextToMedia(opts);
+        return passthrough(opts);
+    }
+
+    // --preview deliberately routes around runVideo() entirely rather than
+    // adding an `if (preview)` inside it: this whole function's own output
+    // handling (png/jpg/ans/txt, whatever's asked for) already applies as-is
+    // once execution reaches here, so there's no separate "allow an image
+    // output for this one video" case to carve out of runVideo()'s mandatory
+    // video-container check below -- that check simply never runs on this path.
+    const bool isVideo = VideoManager::looksLikeVideo(opts.input.path);
+    if (isVideo && opts.input.previewFrame < 0) return runVideo(opts);
 
     ASCIIGEN_PROFILE("run", "pipeline");
 
-    Image img;
+    // Unconditional and this early on purpose: the progress bar needs both of
+    // these active before it ever draws a frame, not just before the final
+    // ASCII art gets printed. Without enableUtf8() first, the console is still
+    // decoding stdout under its default (non-UTF-8) codepage while the bar's
+    // own escape/glyph bytes go out, which is exactly what garbles it. A no-op
+    // when stdout is redirected -- see Terminal::enableAnsi()'s own note.
+    Terminal::enableAnsi();
+    Terminal::enableUtf8();
+
+    // Loaded before there's anywhere to put it -- resolveGridSize below needs the
+    // source's own dimensions, and the pool below needs the grid size to know how
+    // big to make each slot, so this has to come first regardless.
+    Image loadedInput;
     {
         ASCIIGEN_PROFILE("load", "io");
-        img = ImageManager::loadImage(opts.input.path);
+        if (isVideo) loadedInput = loadPreviewFrame(opts.input.path, std::max(0, opts.input.previewFrame));
+        else loadedInput = ImageManager::loadImage(opts.input.path);
     }
-    if (!img.pixels) return 3;
-
-    // Extracted before anything downstream can touch img: the resample for
-    // filters below always produces a 3-channel plane, so this is the only
-    // point where the source's own alpha channel still exists.
-    Image alphaSource;
-    if (opts.edge.alphaOutline) {
-        if (img.depth == 4 || img.depth == 2) {
-            alphaSource = Image(img.width, img.height, 1);
-
-            const int d = img.depth;
-            const byte* src = img.pixels + (d - 1);
-            byte* dst = alphaSource.pixels;
-            const size_t n = (size_t)img.width * (size_t)img.height;
-
-            for (size_t i = 0; i < n; i++, src += d, dst++) *dst = *src;
-        }
-        else {
-            std::cerr << "asciigen: --edge-alpha requested but the source has no alpha "
-                         "channel; skipped.\n";
-        }
-    }
+    if (!loadedInput.pixels) return 3;
 
     int cols = 0, rows = 0;
-    resolveGridSize(opts, img, cols, rows);
+    resolveGridSize(opts, loadedInput.width, loadedInput.height, cols, rows);
 
     Charset charset;
     {
         ASCIIGEN_PROFILE("buildCharset", "font");
         charset = buildCharset(opts);
     }
-
-    CellBuffer buffer;
-    buffer.setSize(cols, rows);
 
     Dithering::options = {
         .enabled = opts.dither.name != DitherName::None,
@@ -292,6 +1433,7 @@ int run(const Options& opts)
     }
     Font& font = *fontHolder;
 
+    filterUnsupportedGlyphs(charset, font, fontPath.filename().string());
 
     // Width is half the height, always, so the cell grid can never be broken by
     // the choice of face.
@@ -323,147 +1465,14 @@ int run(const Options& opts)
     else if (opts.algo.resampleFilter == ResampleFilterName::Triangle)
         resampleFilter = Resample::Filter::Triangle;
 
-    auto doResample = [&]() {
-        ASCIIGEN_PROFILE("resample for filters", "resample");
-        Image plane;
-        Resample::toGrid(img, plane, planeW, planeH, resampleFilter);
-        img = std::move(plane);
-    };
-
-    auto doFilters = [&]() {
-        ASCIIGEN_PROFILE("source filters", "filter");
-
-        if (opts.source.autoLevels)
-            ImageFilters::autoLevels(img, opts.source.autoLevelsLow, opts.source.autoLevelsHigh);
-        if (opts.source.levels)
-            ImageFilters::levels(
-                img, opts.source.levelsBlack, opts.source.levelsWhite, opts.source.levelsGamma
-            );
-        if (opts.source.contrast != 1.f) ImageFilters::contrast(img, opts.source.contrast);
-        if (opts.source.blurRadius > 0) ImageFilters::blur(img, opts.source.blurRadius);
-        if (opts.source.sharpenAmount > 0.f)
-            ImageFilters::unsharpMask(img, opts.source.sharpenAmount, opts.source.sharpenRadius);
-    };
-
-    // Whichever side has fewer pixels goes first. A source bigger than the
-    // plane (the common case) gets resampled down before filtering -- most of
-    // it would be smoothed away regardless, so filtering it in full is wasted
-    // work, and sharpening in particular is largely undone by the later
-    // averaging. A source smaller than the plane -- easy to hit at a large
-    // --grid-height, since the plane's size follows grid size, not the
-    // source's -- gets filtered first instead: resampling it up before
-    // filtering would mean filtering mostly-interpolated pixels the resample
-    // just invented, for no real detail gained. This is a genuinely different
-    // operation on different pixels either way, not just a speed choice --
-    // see optimizations.md's "plane is upsampled" entry.
-    if ((size_t)img.width * (size_t)img.height < (size_t)planeW * (size_t)planeH) {
-        doFilters();
-        doResample();
-    }
-    else {
-        doResample();
-        doFilters();
-    }
-
-
-    switch (opts.algo.name) {
-    case AlgoName::Ramp:
-        Ramp::generate(img, buffer, charset, opts.algo.rampChars, resampleFilter);
-        break;
-
-    case AlgoName::Bitmask:
-        Bitmask::generate(
-            img, buffer, matchAtlas,
-            {.allowBackground = opts.algo.allowBackground,
-             .brightnessGamma = opts.algo.brightnessGamma,
-             .softness = opts.algo.bitmaskSoftness,
-             .blurRadius = opts.algo.bitmaskBlurRadius,
-             .resampleFilter = resampleFilter}
-        );
-        break;
-
-    case AlgoName::Structure:
-        Structure::generate(
-            img, buffer, matchAtlas,
-            {.shape = {.orientBlocksX = opts.algo.structureOrientBlocksX,
-                       .orientBlocksY = opts.algo.structureOrientBlocksY,
-                       .bins = opts.algo.structureBins,
-                       .massBlocksX = opts.algo.structureMassBlocksX,
-                       .massBlocksY = opts.algo.structureMassBlocksY},
-             .orientationWeight = opts.algo.structureOrientationWeight,
-             .massWeight = opts.algo.structureMassWeight,
-             .toneWeight = opts.algo.structureToneWeight,
-             .allowBackground = opts.algo.allowBackground,
-             .brightnessGamma = opts.algo.brightnessGamma,
-             .gradientStride = opts.algo.structureGradientStride,
-             .fastAtan = opts.algo.structureFastAtan,
-             .flatThreshold = opts.algo.structureFlatThreshold,
-             .resampleFilter = resampleFilter}
-        );
-        break;
-    }
-
-    // May append the directional glyphs, so anything rasterised from the charset
-    // has to come after this.
-    {
-        ASCIIGEN_PROFILE("edges", "edges");
-        Edges::apply(img, buffer, charset, alphaSource);
-    }
-
-    {
-        ASCIIGEN_PROFILE("cell filters", "filter");
-
-        if (opts.grid.despeckle > 0.f)
-            CellFilters::despeckle(buffer, matchAtlas, opts.grid.despeckle);
-
-        if (opts.grid.brightness != 1.f || opts.grid.gamma != 1.f)
-            CellFilters::brightness(buffer, opts.grid.brightness, opts.grid.gamma);
-        if (opts.grid.vibrance != 0.f) CellFilters::vibrance(buffer, opts.grid.vibrance);
-
-        if (opts.grid.palette == PaletteName::Gruvbox)
-            CellFilters::paletteMap(buffer, Palettes::gruvbox(), opts.grid.paletteStrength);
-        else if (opts.grid.palette == PaletteName::Nord)
-            CellFilters::paletteMap(buffer, Palettes::nord(), opts.grid.paletteStrength);
-    }
-
-    // Last, so the colour filters cannot shift the chosen backdrop, and so cells
-    // blanked by despeckle carry it too rather than punching black holes.
-    RGB backdrop {0, 0, 0};
-    if (opts.backdrop.mode == BackdropMode::Auto)
-        backdrop = buffer.suggestedBackground(opts.backdrop.darken, opts.backdrop.lumaThreshold);
-    else if (opts.backdrop.mode == BackdropMode::Fixed) backdrop = opts.backdrop.color;
-
-    // Not when the selector solved a background per cell. Painting one colour
-    // over all of them throws that second colour away and leaves the backdrop
-    // showing through wherever a glyph does not cover -- which reads as a dark
-    // seam between every pair of blocks. The backdrop is still what pads the
-    // picture; it just has no business inside the grid here.
-    //
-    // Transparent needs no fill at all -- the ANSI renderer is about to skip
-    // the background escape entirely, so whatever colour sat in the buffer
-    // would never be seen anyway.
-    if (opts.backdrop.mode != BackdropMode::None && opts.backdrop.mode != BackdropMode::Transparent
-        && !opts.algo.allowBackground)
-        buffer.fillBackground(backdrop);
-
-    const std::string text = AnsiRenderer::render(
-        buffer, charset,
-        {.depth = toDepth(opts.output.color),
-         .transparentBackground = opts.backdrop.mode == BackdropMode::Transparent}
-    );
-
-    if (opts.output.stdoutEnabled) {
-        Terminal::enableAnsi();
-        Terminal::enableUtf8();
-        std::cout << text;
-    }
-
-    if (opts.output.paths.empty()) return 0;
-
     ImageManager::setPngCompression(opts.output.pngCompression);
 
+    // Built once, same as matchAtlas above -- an image-format output shares one render
+    // regardless of how many paths ask for one (renderToSize used to run again per path;
+    // now FrameProcessor::run does it exactly once, into frame.renderedImage below).
     GlyphAtlas renderAtlas;
-    if (wantsImage(opts)) {
+    const bool needsImage = wantsImage(opts);
+    if (needsImage) {
         // With no target size the natural render IS the file, so this number is
         // the glyph size you actually get. 16 is what a terminal draws at, but a
         // terminal hints its stems onto the pixel grid and we do not -- at 8x16
@@ -479,12 +1488,108 @@ int run(const Options& opts)
         renderAtlas = GlyphAtlas(font, charset, std::max(1, renderH / 2), renderH, opts.font.bold);
     }
 
+    // One slot, one call -- video will be `pool.allocate(workerCount + slack, ...)`
+    // with the same call, the same class, just a bigger number. Sizes every slot's
+    // buffer/plane up front (see FrameStorage::allocate), so steady-state (a
+    // future video's second frame onward) allocates nothing new inside
+    // FrameProcessor::run.
+    FramePool pool;
+    pool.allocate(1, cols, rows, planeW, planeH);
+    pool.slot(0).storage.input = std::move(loadedInput);
+
+    // Built once, whichever one the algorithm actually needs -- both depend only on
+    // matchAtlas and options that don't change frame to frame, so generate() no
+    // longer rebuilds its own copy of this on every call the way it used to.
+    FrameProcessor::Context ctx {
+        .font = &font,
+        .charset = &charset,
+        .matchAtlas = &matchAtlas,
+        .renderAtlas = needsImage ? &renderAtlas : nullptr,
+        .resampleFilter = resampleFilter,
+        .planeW = planeW,
+        .planeH = planeH,
+    };
+
+    if (opts.algo.name == AlgoName::Structure) {
+        Structure::buildGlyphModel(
+            matchAtlas,
+            {.orientBlocksX = opts.algo.structureOrientBlocksX,
+             .orientBlocksY = opts.algo.structureOrientBlocksY,
+             .bins = opts.algo.structureBins,
+             .massBlocksX = opts.algo.structureMassBlocksX,
+             .massBlocksY = opts.algo.structureMassBlocksY},
+            ctx.structureModel
+        );
+    } else if (opts.algo.name == AlgoName::Bitmask) {
+        Bitmask::buildModel(
+            matchAtlas,
+            {.allowBackground = opts.algo.allowBackground,
+             .softness = opts.algo.bitmaskSoftness,
+             .blurRadius = opts.algo.bitmaskBlurRadius},
+            ctx.bitmaskModel
+        );
+    }
+
+    // The actual frame processing runs on a worker thread -- one worker for a
+    // still image, workerCount for video, identical Manager either way.
+    // Everything else (submission, progress display, waiting) stays right here
+    // on the main thread; only FrameProcessor::run itself ever leaves it.
+    //
+    // The rendered image is handed back through onRendered rather than read
+    // from the slot afterward -- FrameStorage no longer holds one at all, see
+    // its own note on why. imageDone is this path's equivalent of video's
+    // saverFinished: a plain flag the single callback sets once the one frame
+    // that will ever exist here has arrived.
+    Image renderedImage;
+    std::atomic<bool> imageDone {false};
+
+    pool.submit(0);
+    {
+        FrameWorkerPool::Manager manager(
+            pool, opts, ctx, /*workerCount=*/1,
+            [&](int, Image&& img, std::string&&) {
+                renderedImage = std::move(img);
+                imageDone.store(true, std::memory_order_release);
+            }
+        );
+
+        // Blocks THIS thread, not a new one -- see ProgressDisplay.hpp's note on
+        // why that's correct now that the work being watched already left the
+        // main thread.
+        ProgressDisplay::runUntilDone(
+            [&] { return imageDone.load(std::memory_order_acquire); },
+            {ProgressDisplay::Line {[&] {
+                FrameProgress& p = pool.slot(0).storage.progress;
+                return ProgressDisplay::Snapshot {
+                    "frame", p.stage.load(std::memory_order_relaxed),
+                    p.fraction.load(std::memory_order_relaxed)
+                };
+            }}}
+        );
+
+        // Explicit, not left to the Manager destructor, purely for thread
+        // hygiene: onRendered's own store/load pair already guarantees
+        // renderedImage is visible once imageDone reads true, so this isn't
+        // needed for correctness -- it's here so the worker thread itself is
+        // fully wound down before this scope ends rather than sitting
+        // joined-on-exit.
+        manager.join();
+    }
+
+    FrameStorage& frame = pool.slot(0).storage;
+
+    if (opts.output.stdoutEnabled) {
+        std::cout << frame.text;
+    }
+
+    if (opts.output.paths.empty()) return 0;
+
     int status = 0;
     for (const std::string& given : opts.output.paths) {
         const std::filesystem::path path = resolveOutputPath(opts, given);
 
         if (!opts.output.overwrite && std::filesystem::exists(path)) {
-            std::cerr << "asciigen: \"" << path << "\" exists (use --overwrite)\n";
+            std::cerr << "asciigen: " << path << " exists (use --overwrite)\n";
             status = 6;
             continue;
         }
@@ -493,22 +1598,13 @@ int run(const Options& opts)
         bool ok = false;
 
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg") {
-            ok = ImageRenderer::save(
-                path, buffer, renderAtlas,
-                {.width = opts.output.imageWidth,
-                 .height = opts.output.imageHeight,
-                 .fit = toFit(opts.output.fit),
-                 .align = toAlign(opts.output.align),
-                 .margin = opts.output.imageMargin,
-                 .scale = opts.output.imageScale,
-                 .aspect = opts.output.imageAspect,
-                 .backgroundColor = backdrop}
-            );
+            ok = ImageManager::saveImage(path, renderedImage);
         } else if (ext == ".ans") {
-            ok = OutputManager::saveAns(path, text);
+            ok = OutputManager::saveAns(path, frame.text);
         } else if (ext == ".txt") {
             ok = OutputManager::saveAns(
-                path, AnsiRenderer::render(buffer, charset, {.depth = AnsiRenderer::ColorDepth::None})
+                path,
+                AnsiRenderer::render(frame.buffer, charset, {.depth = AnsiRenderer::ColorDepth::None})
             );
         } else {
             std::cerr << "asciigen: don't know how to write \"" << ext << "\" (.png .jpg .ans .txt)\n";
@@ -517,9 +1613,18 @@ int run(const Options& opts)
         }
 
         if (!ok) {
-            std::cerr << "asciigen: failed writing \"" << path << "\"\n";
+            std::cerr << "asciigen: failed writing " << path << "\n";
             status = 6;
+            continue;
         }
+
+        std::error_code sizeEc;
+        const uint64_t fileBytes = std::filesystem::file_size(path, sizeEc);
+        std::cout << "asciigen: wrote " << path;
+        if (!sizeEc) std::cout << " (" << formatBytes(fileBytes) << ")";
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg")
+            std::cout << " -- " << renderedImage.width << "x" << renderedImage.height;
+        std::cout << "\n";
     }
 
     return status;

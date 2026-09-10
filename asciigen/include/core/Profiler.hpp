@@ -24,6 +24,17 @@ bool enabled();
 // exactly like a fresh one.
 void describe(const std::string& key, const std::string& value);
 
+// Labels the CALLING thread in the trace -- written out as a Chrome Trace
+// Format "thread_name" metadata event, so a viewer shows "worker 3" or
+// "decoder" as that thread's own lane instead of a raw hashed id, and so
+// scopes from two different threads that happen to call the same function
+// (every worker calling FrameProcessor::run, say) are visibly on separate
+// lanes rather than looking tangled together. Safe to call whether or not
+// profiling is currently enabled -- a no-op when it isn't, same as Scope.
+// Call once near the top of whichever thread this is, before anything on it
+// gets profiled.
+void nameThread(const std::string& name);
+
 // Written on a single line each, in the order they finished.
 void record(const char* name, const char* category, long long startUs, long long durUs);
 

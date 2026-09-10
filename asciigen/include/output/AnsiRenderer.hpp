@@ -26,8 +26,10 @@ struct AnsiRenderOptions
     // which already emits no escapes at all.
     bool transparentBackground = false;
 
-    // Reserved for clear-screen / cursor-home framing around the output, for
-    // redrawing in place during video playback. Not read by render() yet.
+    // Prefixes the output with a cursor-home escape, so printing this string
+    // again redraws in place instead of scrolling -- used for a text/ANSI
+    // video's saved frames (see Pipeline.cpp's runVideo/playTextVideo), not
+    // for a still image's single render.
     bool screenControls = false;
 };
 

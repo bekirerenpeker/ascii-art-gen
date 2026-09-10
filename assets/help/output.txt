@@ -14,6 +14,15 @@ for, and once you ask for one, printing stops unless you also pass --stdout.
         asciigen assets/images/apple.png --out ./output
             -> ./output/apple.png
 
+  --format EXT                                    (none; extension decides)
+      Which format a bare-directory --out should use, so a filename never has
+      to be spelled out just to pick one. Dot optional and case-insensitive
+      ("png", ".png" and "PNG" all work); jpg and jpeg both accepted. Ignored
+      whenever --out already names a real file -- that extension wins.
+
+        asciigen photo.jpg --out ./output --format txt
+            -> ./output/photo.txt
+
   --stdout / --no-stdout
       Force printing on or off, whatever else was asked for.
 
@@ -36,6 +45,21 @@ FORMATS
   .png .jpg     the glyphs drawn back into a picture. Honours --image-*
   .ans          text with colour escape codes. Displays in a terminal
   .txt          characters only, no colour
+
+  A VIDEO input can also target .ans/.txt instead of a pixel container
+  (.mp4 .mkv .mov .avi .webm .m4v) -- every frame one after another, in the
+  same .ans/.txt shape as a still image's, with one metadata line (fps, frame
+  count, duration) up front and a marker between frames. Not meant to be
+  cat'd -- see --help input for what happens when one is given back in.
+
+  .mkv specifically means lossless (FFV1), not just another pixel container --
+  every other extension above is lossy MPEG-4. Bigger files, no compression
+  artifacts, bit-exact. Needs a player with an FFV1 decoder to open -- VLC or
+  mpv, not Windows' built-in one, which doesn't ship one and will say the file
+  is an unsupported/unknown format no matter how low the bitrate is. Not a
+  general-purpose delivery format (most wallpaper/media tools expect .mp4);
+  good for archival or a source to re-encode from without already having lost
+  quality to MPEG-4 first.
 
 
 PICTURE SIZE

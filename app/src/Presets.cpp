@@ -76,6 +76,9 @@ bool apply(const std::string& name, Options& out)
 
     if (name == "blocks") {
         out.algo.name = AlgoName::Bitmask;
+        // On by default -- see --algo-allow-background's own help entry on
+        // why turning it off leaves partial-coverage glyphs (anything but a
+        // full block) with a literal black hole in the part they don't ink.
         out.algo.allowBackground = true;
         out.charset.name = CharsetName::Blocks;
         out.backdrop.mode = BackdropMode::Auto;

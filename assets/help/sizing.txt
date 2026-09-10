@@ -10,7 +10,8 @@ Three different sizes, resolved in this order. They are easy to confuse.
 
   One given          the other follows from the source's shape
   Both given         used exactly, shape ignored
-  Neither            terminal size when printing, otherwise 160 wide
+  Neither            fits the terminal when printing (--grid-fit decides how,
+                     default auto), otherwise 160 wide
 
   Cells are twice as tall as they are wide, and that is accounted for, so a
   square photo gives a grid about twice as wide as it is tall.
@@ -86,12 +87,12 @@ FIT MODES
 
 RENDER DETAIL
 
-  --render-detail LEVEL          test | mid | high              (unset)
+  --render-detail LEVEL          low | mid | high               (unset)
 
   One switch for "how much effort is this render worth". Sets glyph size and
   PNG effort together, so previewing and committing are one word apart:
 
-    test    16px glyphs, fastest encoding
+    low     16px glyphs, fastest encoding
     mid     32px glyphs, moderate encoding
     high    64px glyphs, smallest files
 
@@ -101,7 +102,7 @@ RENDER DETAIL
   to commit to. Use --grid-width for that, separately and on purpose.
 
   Because the grid is unchanged, selection costs the same at every level; what
-  test buys you is the render and encode, not the whole run.
+  low buys you is the render and encode, not the whole run.
 
   Applied after any --preset, so it overrides the render size a preset picked;
   applied before your own flags, so --font-render-size still beats it.

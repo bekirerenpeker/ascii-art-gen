@@ -93,7 +93,7 @@ enum class ImageFit
 enum class RenderDetail
 {
     None,
-    Test,
+    Low,
     Mid,
     High,
 };
@@ -111,12 +111,43 @@ enum class ImageAlign
     BottomRight,
 };
 
+// Where a text/ANSI video (see Pipeline.cpp's runVideo/playTextVideo) starts
+// drawing when played back. TopLeft clears the screen once, before the first
+// frame, then homes the cursor before every frame after that too -- so a
+// shorter later frame can never leave a longer earlier one's glyphs peeking
+// out around it. Inline starts wherever the cursor already was (right under
+// whatever command was run) and only ever moves up by exactly the previous
+// frame's own line count, never further -- correct for a plain .txt file,
+// which can't carry a cursor-home escape of its own to fall back on, but can
+// run past the bottom of the window for a grid taller than what's left below
+// the prompt. TopLeft is the default specifically because --grid-fit's own
+// default (auto) already sizes the grid to fit inside the terminal, so it
+// never overflows there either way -- Inline exists for whoever wants the
+// video to start below their own scrollback instead of taking over the
+// screen.
+enum class PlaybackPosition
+{
+    TopLeft,
+    Inline,
+};
+
 struct InputOptions
 {
     std::string path;
 
     // Set from the extension, not by a flag: .txt and .ans are printed as-is.
     bool passthrough = false;
+
+    // -1 means "not requested". Set by --preview: decode a video input only up
+    // to (and use) this one frame, then run it through the ordinary
+    // still-image pipeline instead of the video one -- lets algorithm/render
+    // options be tuned against a real frame without waiting for the whole
+    // clip. No effect on an input that isn't a video.
+    int previewFrame = -1;
+
+    // --play-position: only meaningful when the input turns out to be a saved
+    // text/ANSI video (see PlaybackPosition's own note) -- ignored otherwise.
+    PlaybackPosition playPosition = PlaybackPosition::TopLeft;
 };
 
 struct SourceOptions
@@ -136,6 +167,13 @@ struct SourceOptions
     int sharpenRadius = 1;
 
     int blurRadius = 0;
+
+    // Three different things, not one flag with modes: a real photo negative
+    // (invert) also swaps complementary hues, where the other two hold hue
+    // fixed and flip just one of lightness/saturation. See ImageFilters.hpp.
+    bool invert = false;
+    bool invertBrightness = false;
+    bool invertSaturation = false;
 };
 
 struct FontOptions
@@ -165,11 +203,28 @@ struct CharsetOptions
     std::vector<std::pair<char32_t, char32_t>> ranges;
 };
 
+// Which terminal dimension --grid-fit uses when both grid.width and
+// grid.height are 0 (see resolveGridSize in Pipeline.cpp). Width and Height
+// match the terminal-basis behaviour this project always had; Auto is new --
+// the largest grid that fits inside BOTH terminal dimensions at once while
+// keeping the source's own aspect, so a portrait source at a wide terminal
+// doesn't come out taller than the window (Width alone would size it to the
+// full terminal width regardless of how many rows that implies).
+enum class GridFitAxis
+{
+    Auto,
+    Width,
+    Height,
+};
+
 struct GridOptions
 {
     // 0 derives from the source aspect; 0 for both falls back to the terminal.
     int width = 0;
     int height = 0;
+
+    // Only consulted in the "0 for both" case above.
+    GridFitAxis fitAxis = GridFitAxis::Auto;
 
     float brightness = 1.f;
     float gamma = 1.f;
@@ -282,6 +337,23 @@ struct BackdropOptions
     float lumaThreshold = 40.f;
 };
 
+struct VideoOptions
+{
+    // 0 keeps the source's own frame rate. Only ever drops frames to reach a
+    // lower target -- a value at or above the source rate is left alone
+    // rather than duplicating frames to fake a higher one.
+    double fps = 0.0;
+
+    // -1 means unset. Whichever of the time- or frame-based form for a given
+    // edge is given wins; there's no dedicated error for setting both on the
+    // same edge, same as any other pair of flags that can express the same
+    // thing -- last one parsed simply wins.
+    double startTime = -1.0;
+    double endTime = -1.0;
+    int startFrame = -1;
+    int endFrame = -1;
+};
+
 struct OutputOptions
 {
     std::vector<std::string> paths;
@@ -289,6 +361,13 @@ struct OutputOptions
     // Terminal unless files were asked for. Writing a file is always explicit.
     bool stdoutEnabled = true;
     bool stdoutExplicit = false;
+
+    // --format: which extension a bare-directory --out should use, so a
+    // filename never has to be spelled out just to pick a format. Empty means
+    // "use whatever this output kind's own default extension is" -- resolved
+    // in Pipeline.cpp's resolveOutputPath, which is also where a leading dot
+    // (or its absence) and case get normalised; stored here exactly as typed.
+    std::string format;
 
     ColorMode color = ColorMode::TrueColor;
     bool overwrite = false;
@@ -325,6 +404,7 @@ struct Options
     AlgoOptions algo;
     BackdropOptions backdrop;
     OutputOptions output;
+    VideoOptions video;
 
     std::vector<std::string> presets;
     RenderDetail renderDetail = RenderDetail::None;

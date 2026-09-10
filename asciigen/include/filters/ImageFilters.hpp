@@ -21,6 +21,25 @@ void levels(Image& image, float blackPoint = 0.f, float whitePoint = 255.f, floa
 // Pivots around mid grey. 1 leaves the image alone, below 1 flattens it.
 void contrast(Image& image, float amount = 1.f);
 
+// Full photo negative: 255-v per RGB channel (or the one luma channel on a
+// grey source), alpha left alone. Runs before selection like every other
+// filter here, so it changes which glyph gets picked, not just the final
+// colour -- what would have picked a dense glyph now picks a sparse one,
+// same as flipping a real photo negative changes what looks light or dark.
+void invert(Image& image);
+
+// Keeps hue and saturation, flips only lightness (HSL L -> 1-L) -- a red
+// stays recognisably red, just light and dark swap. Different in kind from
+// invert() above: that one also swaps complementary hues (red <-> cyan),
+// this one doesn't touch hue at all.
+void invertBrightness(Image& image);
+
+// Keeps hue and lightness, flips only saturation (HSL S -> 1-S) -- a vivid
+// colour goes washed-out and a washed-out one goes vivid, at the same
+// brightness. The more experimental of the three: less commonly wanted than
+// the other two, but the same HSL machinery makes it close to free to add.
+void invertSaturation(Image& image);
+
 // Adds back the detail a blur would remove, which sharpens edges. Worth having
 // before Structure runs: a harder edge gives its orientation term more to go on.
 void unsharpMask(Image& image, float amount = 0.6f, int radius = 1);

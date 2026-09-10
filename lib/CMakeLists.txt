@@ -17,3 +17,5 @@ set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
 set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
 
 add_subdirectory(freetype)
+
+add_subdirectory(ffmpeg)

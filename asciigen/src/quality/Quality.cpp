@@ -17,7 +17,8 @@ Report compare(const Image& source, const CellBuffer& buffer, const GlyphAtlas& 
 
     // Same compositing the PNG export uses, at its natural size: the comparison
     // has to line up with the resampled source, so no padding or centring here.
-    const Image rendered = ImageRenderer::render(buffer, atlas);
+    Image rendered;
+    ImageRenderer::render(buffer, atlas, rendered);
     if (!rendered.pixels || !source.pixels) return report;
 
     // Deliberately the undithered plane. Dither is a means, not the target, so

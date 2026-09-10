@@ -12,6 +12,56 @@ asciigen -- input
 
   Formats: png jpg bmp tga gif psd hdr
 
+  Also accepts video (mp4, and in principle whatever container/codec the
+  underlying FFmpeg build can decode -- verified so far against H.264-in-MP4).
+  Detected by content, not extension: opened and probed for a real multi-frame
+  video stream, so a single still image never gets misread as one. A video
+  input needs a video --out -- a pixel container (mp4, mkv, mov, avi, webm,
+  m4v) or a text/ANSI one (.txt, .ans; see --help output) -- --preview below
+  is the one exception.
+
+
+TRIMMING AND FRAME RATE
+
+  --start-time T / --end-time T        seconds, "mm:ss", or "hh:mm:ss[.ms]"
+  --start-frame N / --end-frame N      frame numbers instead, if that's easier
+  --fps N                                              (off; keeps source fps)
+
+  Video only. The frame- and time-based forms say the same thing in different
+  units -- whichever is given for a given edge (start/end) is used; giving
+  both for the same edge just means the one parsed last wins, same as any
+  other pair of flags that overlap. --fps only ever drops frames to reach a
+  lower rate than the source has -- it does not invent frames to reach a
+  higher one.
+
+  There is no seeking (see --preview below), so trimming still costs decoding
+  every frame up to --start-time/--start-frame -- just not processing or
+  writing them.
+
+    asciigen clip.mp4 --start-time 4:52 --end-time 5:10 --out clip.mp4
+    asciigen clip.mp4 --fps 12 --out small.mp4
+
+
+PREVIEW ONE FRAME
+
+  --preview [N]                                                   (off)
+      For a video input only: decode up to (and use) just one frame -- frame
+      N, or frame 0 if N is omitted -- and run it through the ordinary
+      still-image pipeline instead of processing and re-encoding the whole
+      clip. Lets algorithm/render options be tuned against a real frame from
+      the video without waiting on the rest of it every time.
+
+      With --preview, a video input can be written to any image/text output
+      (.png, .jpg, .ans, .txt) -- the video-only --out restriction above only
+      applies without it, since without it the output really is a whole video.
+
+      There is no seeking (see the video decoder's own notes): getting to
+      frame N always means decoding frames 0..N first, so this is the
+      cheapest a specific frame can ever be reached, not a shortcut past that.
+
+        asciigen clip.mp4 --preview --out frame0.png
+        asciigen clip.mp4 --preview 40 --algo bitmask --out frame40.png
+
 
 TEXT PASSTHROUGH
 
@@ -20,8 +70,36 @@ TEXT PASSTHROUGH
 
     asciigen art.ans
 
+  Give it a .ans or .txt file AND an --out/--format, and it renders the saved
+  glyphs/colours back out as real media instead of printing them -- an image
+  if the file is a still, a video if it's a saved video (see --help output),
+  matched against whichever format --out/--format asks for; asking for the
+  wrong kind (an image format for a saved video, say) is an error, not a
+  guess. No algorithm runs again -- the glyph and colour choices already
+  exist in the file -- so --charset/--algo-*/--dither-*/--edge-* have nothing
+  to do here, but --image-width/height/fit/align/margin/scale/aspect and
+  --backdrop still apply, the same as any other image/video output.
+
+    asciigen art.ans --out art.png
+    asciigen clip.ans --out clip.mp4
+
   This exists because `cat` and `type` do not switch the console into VT mode,
   so an .ans file printed with them comes out as literal escape sequences
   instead of colour.
+
+  A .txt/.ans that's actually a saved VIDEO (see --help output) is detected
+  the same way and played back instead -- one frame at a time, redrawn in
+  place, paced to the fps it was saved with -- rather than dumped as one wall
+  of text. Not a full player: no pause, no seeking, no looping, just start to
+  end.
+
+  --play-position MODE                                             (top-left)
+      top-left    clear the screen once, then redraw every frame from the
+                  top-left corner -- immune to overflowing the window, since
+                  --grid-fit's own default already sized the grid to fit it.
+      inline      start wherever the cursor already is (below the command
+                  that was run) instead of taking over the screen. A grid
+                  taller than what's left below the prompt can run past the
+                  bottom of the window in this mode.
 
   Every other flag is ignored in this mode.

@@ -50,6 +50,21 @@ Nothing here is on by default.
       structure for the glyph choice.
 
       1  denoise, shapes intact     2  visibly softer
+
+  --source-invert                                                 (off)
+      Full photo negative (255-v per channel). Runs before selection, so it
+      changes which glyph gets picked, not just the final colour.
+
+  --source-invert-brightness                                     (off)
+      Keeps hue and saturation, flips only light/dark. A red apple stays
+      red -- just its highlight and shadow swap.
+
+  --source-invert-saturation                                     (off)
+      Keeps hue and brightness, flips only how vivid a colour is. The
+      experimental one of the three: near-neutral areas (a background
+      that's almost but not quite pure grey) can pick up visible colour
+      speckle, since a tiny, invisible hue at near-zero saturation becomes
+      a loud one once saturation flips toward 1.
       3  about one cell wide        4+  blurs across cells, goes mushy
 
 

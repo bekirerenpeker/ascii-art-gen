@@ -216,6 +216,36 @@ bool parseAspect(const std::string& text, float& out)
 
 bool boolValue(const std::string& v) { return v != "off" && v != "false" && v != "0"; }
 
+// Plain seconds ("12.5"), "mm:ss(.ms)" ("4:52"), or "hh:mm:ss(.ms)"
+// ("1:04:52.3") -- the same shapes ffmpeg's own -ss/-to accept, so a duration
+// copied from there works here unchanged.
+bool parseTime(const std::string& text, double& outSeconds)
+{
+    std::vector<std::string> parts;
+    std::stringstream ss(text);
+    std::string part;
+    while (std::getline(ss, part, ':')) parts.push_back(part);
+    if (parts.empty() || parts.size() > 3) return false;
+
+    try {
+        double h = 0, m = 0, s = 0;
+        if (parts.size() == 1) s = std::stod(parts[0]);
+        else if (parts.size() == 2) {
+            m = std::stod(parts[0]);
+            s = std::stod(parts[1]);
+        } else {
+            h = std::stod(parts[0]);
+            m = std::stod(parts[1]);
+            s = std::stod(parts[2]);
+        }
+        outSeconds = h * 3600.0 + m * 60.0 + s;
+    } catch (...) {
+        return false;
+    }
+
+    return outSeconds >= 0.0;
+}
+
 }   // namespace
 
 Result parse(int argc, char* argv[], Options& out)
@@ -263,7 +293,7 @@ Result parse(int argc, char* argv[], Options& out)
             // that is a styling decision, not a detail level. Changing it here
             // would mean a preview showed different art from the final render,
             // which defeats the point of previewing.
-            if (v == "test") {
+            if (v == "low") {
                 out.font.renderSize = 16;
                 out.output.pngCompression = 1;
             } else if (v == "mid") {
@@ -274,7 +304,7 @@ Result parse(int argc, char* argv[], Options& out)
                 out.output.pngCompression = 9;
             } else {
                 std::cerr << "asciigen: unknown --render-detail \"" << v
-                          << "\" (test, mid, high)\n";
+                          << "\" (low, mid, high)\n";
                 return Result::ExitFailure;
             }
         }
@@ -318,6 +348,43 @@ Result parse(int argc, char* argv[], Options& out)
 
         // --- input ---
         if (n == "input") { out.input.path = r.value(n); continue; }
+        if (n == "preview") {
+            out.input.previewFrame = 0;
+
+            std::string v;
+            if (r.optionalValue(v)) {
+                try {
+                    out.input.previewFrame = std::stoi(v);
+                } catch (...) {
+                    r.fail("--preview expects a frame number, got \"" + v + "\"");
+                }
+            }
+            continue;
+        }
+        if (n == "play-position") {
+            const std::string v = r.value(n);
+            if (v == "top-left" || v == "top") out.input.playPosition = PlaybackPosition::TopLeft;
+            else if (v == "inline" || v == "here") out.input.playPosition = PlaybackPosition::Inline;
+            else r.fail("unknown --play-position \"" + v + "\" (top-left, inline)");
+            continue;
+        }
+
+        // --- video ---
+        if (n == "fps") { out.video.fps = r.floatValue(n); continue; }
+        if (n == "start-time") {
+            const std::string v = r.value(n);
+            if (!parseTime(v, out.video.startTime))
+                r.fail("bad --start-time \"" + v + "\" (want seconds, mm:ss, or hh:mm:ss)");
+            continue;
+        }
+        if (n == "end-time") {
+            const std::string v = r.value(n);
+            if (!parseTime(v, out.video.endTime))
+                r.fail("bad --end-time \"" + v + "\" (want seconds, mm:ss, or hh:mm:ss)");
+            continue;
+        }
+        if (n == "start-frame") { out.video.startFrame = r.intValue(n); continue; }
+        if (n == "end-frame") { out.video.endFrame = r.intValue(n); continue; }
 
         // --- source ---
         if (n == "source-auto-levels") {
@@ -349,6 +416,12 @@ Result parse(int argc, char* argv[], Options& out)
             continue;
         }
         if (n == "source-blur") { out.source.blurRadius = r.intValue(n); continue; }
+        if (n == "source-invert") { out.source.invert = true; continue; }
+        if (n == "no-source-invert") { out.source.invert = false; continue; }
+        if (n == "source-invert-brightness") { out.source.invertBrightness = true; continue; }
+        if (n == "no-source-invert-brightness") { out.source.invertBrightness = false; continue; }
+        if (n == "source-invert-saturation") { out.source.invertSaturation = true; continue; }
+        if (n == "no-source-invert-saturation") { out.source.invertSaturation = false; continue; }
 
         // --- font ---
         if (n == "font-path") { out.font.path = r.value(n); continue; }
@@ -393,6 +466,14 @@ Result parse(int argc, char* argv[], Options& out)
         // --- grid ---
         if (n == "grid-width") { out.grid.width = r.intValue(n); continue; }
         if (n == "grid-height") { out.grid.height = r.intValue(n); continue; }
+        if (n == "grid-fit") {
+            const std::string v = r.value(n);
+            if (v == "auto") out.grid.fitAxis = GridFitAxis::Auto;
+            else if (v == "width") out.grid.fitAxis = GridFitAxis::Width;
+            else if (v == "height") out.grid.fitAxis = GridFitAxis::Height;
+            else r.fail("unknown --grid-fit \"" + v + "\" (auto, width, height)");
+            continue;
+        }
         if (n == "grid-brightness") { out.grid.brightness = r.floatValue(n); continue; }
         if (n == "grid-gamma") { out.grid.gamma = r.floatValue(n); continue; }
         if (n == "grid-vibrance") { out.grid.vibrance = r.floatValue(n); continue; }
@@ -479,7 +560,13 @@ Result parse(int argc, char* argv[], Options& out)
             else r.fail("unknown algorithm \"" + v + "\" (ramp, bitmask, structure)");
             continue;
         }
-        if (n == "algo-allow-background") { out.algo.allowBackground = true; continue; }
+        if (n == "algo-allow-background") {
+            out.algo.allowBackground = true;
+
+            std::string v;
+            if (r.optionalValue(v)) out.algo.allowBackground = boolValue(v);
+            continue;
+        }
         if (n == "no-algo-allow-background") { out.algo.allowBackground = false; continue; }
         if (n == "algo-brightness-gamma") { out.algo.brightnessGamma = r.floatValue(n); continue; }
         if (n == "algo-ramp-chars") { out.algo.rampChars = r.value(n); continue; }
@@ -538,6 +625,7 @@ Result parse(int argc, char* argv[], Options& out)
 
         // --- output ---
         if (n == "out") { out.output.paths.push_back(r.value(n)); continue; }
+        if (n == "format") { out.output.format = r.value(n); continue; }
         if (n == "stdout") {
             out.output.stdoutEnabled = true;
             out.output.stdoutExplicit = true;
@@ -568,10 +656,10 @@ Result parse(int argc, char* argv[], Options& out)
         if (n == "png-compression") { out.output.pngCompression = r.intValue(n); continue; }
         if (n == "render-detail") {
             const std::string v = r.value(n);
-            if (v == "test") out.renderDetail = RenderDetail::Test;
+            if (v == "low") out.renderDetail = RenderDetail::Low;
             else if (v == "mid") out.renderDetail = RenderDetail::Mid;
             else if (v == "high") out.renderDetail = RenderDetail::High;
-            else r.fail("unknown --render-detail \"" + v + "\" (test, mid, high)");
+            else r.fail("unknown --render-detail \"" + v + "\" (low, mid, high)");
             continue;
         }
         if (n == "image-margin") { out.output.imageMargin = r.intValue(n); continue; }

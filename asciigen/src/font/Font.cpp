@@ -18,6 +18,16 @@ Font::Font(std::filesystem::path filepath)
     FT_New_Face(s_library, filepath.string().c_str(), 0, &m_face);
 }
 
+bool Font::hasGlyph(char32_t c) const
+{
+    if (!m_face) return false;
+    // Glyph index 0 is .notdef by convention -- FT_Get_Char_Index returns it
+    // for exactly this "no mapping" case, distinct from FT_Load_Char's own
+    // silent fallback (see this function's own header note on why that one
+    // can't be used to detect the same thing).
+    return FT_Get_Char_Index(m_face, static_cast<FT_ULong>(c)) != 0;
+}
+
 void Font::rasterize(char32_t c, uint8_t* outBuffer, int cellW, int cellH, float boldness) const
 {
     if (!m_face || !outBuffer || cellW <= 0 || cellH <= 0) return;

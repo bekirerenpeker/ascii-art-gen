@@ -46,7 +46,9 @@ static void stamp(
     }
 }
 
-bool apply(const Image& image, CellBuffer& buffer, Charset& charset, const Image& alpha)
+bool apply(
+    const Image& image, CellBuffer& buffer, Charset& charset, const Image& alpha, Scratch& scratch
+)
 {
     const bool wantScharr = options.enabled && image.pixels;
     const bool wantAlpha = alphaOptions.enabled && alpha.pixels;
@@ -69,34 +71,42 @@ bool apply(const Image& image, CellBuffer& buffer, Charset& charset, const Image
     const bool charsetGrew = charset.size() != sizeBefore;
 
     if (wantScharr) {
-        EdgeField field;
+        EdgeField& field = scratch.scharrField;
         switch (options.algorithm) {
         case Algorithm::Scharr:
-            detectScharr(image, buffer.width(), buffer.height(), options.subsamples, field);
+            detectScharr(
+                image, buffer.width(), buffer.height(), options.subsamples, field,
+                scratch.scharrPlane
+            );
             break;
         }
 
-        if (options.nms) suppressNonMaxima(field);
+        if (options.nms) suppressNonMaxima(field, scratch.nmsSnapshot);
 
-        const auto accepted =
-            hysteresisAccept(field, options.threshold, options.threshold * options.hysteresis);
+        hysteresisAccept(
+            field, options.threshold, options.threshold * options.hysteresis, scratch.accepted,
+            scratch.stack
+        );
         stamp(
-            field, accepted, options.coherence, glyphIndex, options.colorSet, options.color,
+            field, scratch.accepted, options.coherence, glyphIndex, options.colorSet, options.color,
             options.brightness, buffer
         );
     }
 
     if (wantAlpha) {
-        EdgeField field;
-        detectAlphaOutline(alpha, buffer.width(), buffer.height(), options.subsamples, field);
+        EdgeField& field = scratch.alphaField;
+        detectAlphaOutline(
+            alpha, buffer.width(), buffer.height(), options.subsamples, field, scratch.alphaPlane
+        );
 
-        if (options.nms) suppressNonMaxima(field);
+        if (options.nms) suppressNonMaxima(field, scratch.nmsSnapshot);
 
-        const auto accepted = hysteresisAccept(
-            field, alphaOptions.threshold, alphaOptions.threshold * options.hysteresis
+        hysteresisAccept(
+            field, alphaOptions.threshold, alphaOptions.threshold * options.hysteresis,
+            scratch.accepted, scratch.stack
         );
         stamp(
-            field, accepted, alphaOptions.coherence, glyphIndex, alphaOptions.colorSet,
+            field, scratch.accepted, alphaOptions.coherence, glyphIndex, alphaOptions.colorSet,
             alphaOptions.color, alphaOptions.brightness, buffer
         );
     }

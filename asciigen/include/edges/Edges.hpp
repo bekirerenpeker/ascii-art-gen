@@ -4,6 +4,7 @@
 #include "core/Charset.hpp"
 #include "core/Color.hpp"
 #include "core/Image.hpp"
+#include "edges/EdgeField.hpp"
 
 namespace Edges {
 
@@ -99,6 +100,11 @@ inline AlphaOptions alphaOptions;
 // Returns true if the charset grew, in which case any atlas used for RENDERING
 // must be rebuilt from it -- the atlas that drove selection does not, since
 // selection is already finished.
-bool apply(const Image& image, CellBuffer& buffer, Charset& charset, const Image& alpha);
+//
+// `scratch` is caller-owned, reused across frames instead of allocated fresh per
+// call -- see EdgeField.hpp's Scratch.
+bool apply(
+    const Image& image, CellBuffer& buffer, Charset& charset, const Image& alpha, Scratch& scratch
+);
 
 };   // namespace Edges
