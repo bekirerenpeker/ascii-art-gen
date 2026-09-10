@@ -31,15 +31,15 @@
 
 include(FetchContent)
 
-set(_ffmpeg_release "autobuild-2026-08-25-13-06")
+set(_ffmpeg_release "autobuild-2026-09-09-14-51")
 set(_ffmpeg_base "https://github.com/BtbN/FFmpeg-Builds/releases/download/${_ffmpeg_release}")
 
 if(WIN32)
-    set(_ffmpeg_url "${_ffmpeg_base}/ffmpeg-n9.0.1-6-g9d4ca21220-win64-lgpl-shared-9.0.zip")
-    set(_ffmpeg_hash "SHA256=beea327434de459b16f4a8d1ad3a56c13dd787962d010b029bf767c3afb33542")
+    set(_ffmpeg_url "${_ffmpeg_base}/ffmpeg-n9.0.1-27-g9b0578816c-win64-lgpl-shared-9.0.zip")
+    set(_ffmpeg_hash "SHA256=575642722b7c7079c6855c166ed1ea9d5b7451cdf70919871229e4e1ebe24a34")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(_ffmpeg_url "${_ffmpeg_base}/ffmpeg-n9.0.1-6-g9d4ca21220-linux64-lgpl-shared-9.0.tar.xz")
-    set(_ffmpeg_hash "SHA256=f9938c58f4acdcde4912e4af49672822ba92b33bcc8e27971ca3a4092cc3ae51")
+    set(_ffmpeg_url "${_ffmpeg_base}/ffmpeg-n9.0.1-27-g9b0578816c-linux64-lgpl-shared-9.0.tar.xz")
+    set(_ffmpeg_hash "SHA256=41cda2a36903c63d1c99a5f324a62859adbb784e5b030a013391a94db336c9bd")
 else()
     message(FATAL_ERROR
         "No prebuilt FFmpeg pinned for this platform (${CMAKE_SYSTEM_NAME}) yet -- "

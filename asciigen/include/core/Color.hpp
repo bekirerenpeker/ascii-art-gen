@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 // The 16 standard ANSI colors. Values are the SGR *foreground* parameters, so

@@ -64,6 +64,20 @@ else()
     target_compile_options(asciigen_cli PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
 endif()
 
+# On Linux/macOS, sitting next to the binary isn't enough on its own -- unlike
+# Windows' DLL search order, the ELF/Mach-O loader only looks there if told to.
+# $ORIGIN covers both the build tree and an installed copy, since the .so files
+# land beside the executable in both (POST_BUILD copy below, install() further
+# down).
+if(NOT WIN32)
+    if(APPLE)
+        set_target_properties(asciigen_cli PROPERTIES INSTALL_RPATH "@loader_path")
+    else()
+        set_target_properties(asciigen_cli PROPERTIES INSTALL_RPATH "$ORIGIN")
+    endif()
+    set_target_properties(asciigen_cli PROPERTIES BUILD_WITH_INSTALL_RPATH ON)
+endif()
+
 # FFmpeg is linked as shared libraries (lib/ffmpeg/CMakeLists.txt explains why static
 # wasn't an option), so the DLLs/.so files have to physically sit next to the built
 # binary -- a POST_BUILD step, not a link setting, since nothing about linking an
@@ -93,7 +107,10 @@ if(FFMPEG_RUNTIME_FILES)
     install(FILES ${FFMPEG_RUNTIME_FILES} DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
-install(
-    DIRECTORY "${CMAKE_SOURCE_DIR}/assets/help" "${CMAKE_SOURCE_DIR}/assets/fonts"
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/asciigen
-)
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/help" DESTINATION ${CMAKE_INSTALL_DATADIR}/asciigen)
+
+# assets/fonts is gitignored (no font ships with the project -- see README), so it
+# won't exist on a fresh clone unless the user dropped one in themselves.
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/fonts")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/fonts" DESTINATION ${CMAKE_INSTALL_DATADIR}/asciigen)
+endif()
