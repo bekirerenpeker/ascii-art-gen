@@ -1,16 +1,23 @@
 # asciigen
 
-Turns a picture into characters — by matching each glyph's **shape** against that patch of
-the image, not by mapping brightness to a `.:-=+*#%@` ramp.
+Turns a picture — or a video, frame by frame — into characters, by matching each glyph's
+**shape** against that patch of the image, not by mapping brightness to a `.:-=+*#%@` ramp.
 
-Renders to the terminal, to `.ans`/`.txt`, or back into a PNG.
+Renders to the terminal, to `.ans`/`.txt`, or to a PNG — and the same pipeline runs a video
+straight through to an MP4/MKV or a saved, replayable `.ans`, just as easily. See
+[Video](#video) below.
 
 ![A photograph rendered as coloured ASCII characters](assets/showcase/porsche-911-blue/photo-bold.png)
 
 ```sh
 asciigen photo.jpg                                        # straight to the terminal
 asciigen photo.jpg --preset wallpaper-center --out ./out  # a desktop wallpaper
+asciigen clip.mp4 --preset blocks --out clip.mp4           # video in, video out
 ```
+
+[Why it looks different](#why-it-looks-different) · [Gallery](#gallery) ·
+[Video](#video) · [Building](#building) · [Documentation](#documentation) ·
+[Layout](#layout) · [Third-party](#third-party)
 
 ---
 
@@ -63,6 +70,29 @@ every preset — is produced by [`assets/images/generate-showcase.ps1`](assets/i
 | **Nord** · `--preset nord`<br>Cell colours snapped to a palette by perceived distance. | **Gruvbox** · `--preset gruvbox` |
 |---|---|
 | ![](assets/showcase/porsche-911-blue/nord.png) | ![](assets/showcase/porsche-911-blue/gruvbox.png) |
+
+---
+
+## Video
+
+Give it a video instead of a picture and everything above still applies — same algorithms,
+same presets, same colour grading — just run frame by frame through the whole clip instead
+of once.
+
+```sh
+asciigen clip.mp4 --preset blocks --out clip.mp4   # ascii video, back out as a real video
+asciigen clip.mp4 --preset blocks --out clip.ans   # or saved as ANSI text instead
+asciigen clip.ans                                  # play it back, paced to its own frame rate
+```
+
+Decoding, rendering and encoding each get their own thread and overlap rather than run one
+after another, so a clip doesn't cost decode + render + encode added up. `--preview` renders
+just one frame through the ordinary still-image pipeline, for tuning options against a real
+frame of the clip without waiting on the rest of it; `--start-time`/`--end-time` trim before
+anything is processed. A saved `.ans` can also be converted straight to a picture or video
+later, with no re-processing, via the same `--out`.
+
+`asciigen --help input` has the full trimming/preview/playback reference.
 
 ---
 
